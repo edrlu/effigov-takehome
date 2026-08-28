@@ -8,3 +8,6 @@ node_modules/
 .next/
 out/
 .DS_Store
+
+# The captain's private copy of the assignment, kept out of the repo.
+TASK.md
