@@ -1,14 +1,17 @@
-"""Data model for the case-management demo.
+"""Data model.
 
-Three tables carry the whole flow:
+The central modelling decision: a **Case is a civic incident**, and a
+**Report is one resident's observation of it**. Three neighbours calling about
+the same pothole produce one case with three reports, not three cases. Almost
+everything interesting in this demo - deduplication, priority that rises with
+corroboration, an audit trail that survives repeated calls - falls out of that
+one distinction.
 
-* ``Case``  - the durable unit of work a staff member triages.
-* ``Call``  - one voice session; may or may not end up attached to a case.
-* ``Turn``  - a single transcript line inside a call.
-* ``Event`` - an append-only audit log of everything that changed a case.
-
-Every mutation goes through ``server.store``, which writes the row *and*
-publishes an event on the websocket hub, so the dashboard never has to poll.
+* ``Case``   - the pothole itself. What a crew gets dispatched to.
+* ``Report`` - what one resident said about it, and how to call them back.
+* ``Call``   - one voice session. Produces at most one report.
+* ``Turn``   - a single transcript line inside a call.
+* ``Event``  - append-only audit log of everything that changed a case.
 """
 
 from __future__ import annotations
@@ -46,6 +49,15 @@ class IssueType(str, Enum):
     other = "other"
 
 
+class Department(str, Enum):
+    public_works = "public_works"
+    sanitation = "sanitation"
+    utilities = "utilities"
+    code_enforcement = "code_enforcement"
+    parks = "parks"
+    unassigned = "unassigned"
+
+
 class Priority(str, Enum):
     low = "low"
     normal = "normal"
@@ -58,18 +70,24 @@ class CallStatus(str, Enum):
 
 
 class Case(SQLModel, table=True):
+    """One civic incident, no matter how many people report it."""
+
     id: int | None = Field(default=None, primary_key=True)
     case_number: str = Field(default_factory=new_case_number, index=True, unique=True)
 
-    caller_name: str | None = None
-    phone: str | None = Field(default=None, index=True)
-    address: str | None = None
-
-    issue_type: IssueType | None = None
+    issue_type: IssueType | None = Field(default=None, index=True)
+    department: Department = Field(default=Department.unassigned, index=True)
+    location: str | None = None
     description: str | None = None
 
     status: CaseStatus = Field(default=CaseStatus.new, index=True)
     priority: Priority = Field(default=Priority.normal)
+    priority_score: int = Field(default=0, index=True)
+    report_count: int = Field(default=0)
+
+    escalated: bool = Field(default=False, index=True)
+    escalation_reason: str | None = None
+
     notes: str | None = None
     summary: str | None = None
 
@@ -77,10 +95,25 @@ class Case(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+class Report(SQLModel, table=True):
+    """One resident's account of an incident, and how to reach them."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    case_id: int = Field(foreign_key="case.id", index=True)
+    call_id: int | None = Field(default=None, foreign_key="call.id", index=True)
+
+    reporter_name: str | None = None
+    reporter_phone: str | None = Field(default=None, index=True)
+    description: str | None = None
+
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 class Call(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     room: str = Field(index=True)
     case_id: int | None = Field(default=None, foreign_key="case.id", index=True)
+    report_id: int | None = Field(default=None, index=True)
 
     status: CallStatus = Field(default=CallStatus.active, index=True)
     caller_phone: str | None = None
@@ -107,7 +140,9 @@ class Event(SQLModel, table=True):
     case_id: int | None = Field(default=None, foreign_key="case.id", index=True)
     call_id: int | None = Field(default=None, foreign_key="call.id", index=True)
 
-    kind: str  # case.created | case.updated | call.started | call.ended | note.added
+    # case.created | case.updated | note.added | call.started | call.ended
+    # report.filed | report.merged | case.routed | case.escalated | priority.changed
+    kind: str
     field: str | None = None
     old_value: str | None = None
     new_value: str | None = None

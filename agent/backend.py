@@ -39,6 +39,35 @@ class CaseAPI:
     async def add_turn(self, call_id: int, role: str, text: str) -> None:
         await self._client.post(f"/api/calls/{call_id}/turns", json={"role": role, "text": text})
 
+    # -- reports ----------------------------------------------------------
+    async def file_report(self, **fields: Any) -> dict[str, Any]:
+        """Returns {report, case, merged}. The backend decides whether this is a
+        new incident or another resident reporting one the city already knows."""
+        r = await self._client.post(
+            "/api/reports",
+            params={"actor": "voice_agent"},
+            json={k: v for k, v in fields.items() if v is not None},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def update_report(self, report_id: int, **fields: Any) -> dict[str, Any]:
+        r = await self._client.patch(
+            f"/api/reports/{report_id}",
+            json={k: v for k, v in fields.items() if v is not None},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def escalate(self, case_id: int, reason: str) -> dict[str, Any]:
+        r = await self._client.post(
+            f"/api/cases/{case_id}/escalate",
+            params={"actor": "voice_agent"},
+            json={"reason": reason},
+        )
+        r.raise_for_status()
+        return r.json()
+
     # -- cases ------------------------------------------------------------
     async def create_case(self, **fields: Any) -> dict[str, Any]:
         r = await self._client.post(

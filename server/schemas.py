@@ -4,25 +4,22 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from server.models import CaseStatus, IssueType, Priority
+from server.models import CaseStatus, Department, IssueType, Priority
 
 
 class CaseCreate(BaseModel):
-    caller_name: str | None = None
-    phone: str | None = None
-    address: str | None = None
     issue_type: IssueType | None = None
+    department: Department | None = None
+    location: str | None = None
     description: str | None = None
     status: CaseStatus = CaseStatus.new
-    priority: Priority = Priority.normal
     notes: str | None = None
 
 
 class CaseUpdate(BaseModel):
-    caller_name: str | None = None
-    phone: str | None = None
-    address: str | None = None
     issue_type: IssueType | None = None
+    department: Department | None = None
+    location: str | None = None
     description: str | None = None
     status: CaseStatus | None = None
     priority: Priority | None = None
@@ -33,6 +30,25 @@ class NoteCreate(BaseModel):
     note: str
 
 
+class EscalateRequest(BaseModel):
+    reason: str
+
+
+class ReportCreate(BaseModel):
+    issue_type: IssueType | None = None
+    location: str | None = None
+    description: str | None = None
+    reporter_name: str | None = None
+    reporter_phone: str | None = None
+    call_id: int | None = None
+
+
+class ReportUpdate(BaseModel):
+    reporter_name: str | None = None
+    reporter_phone: str | None = None
+    description: str | None = None
+
+
 class CallCreate(BaseModel):
     room: str
     caller_phone: str | None = None
@@ -40,6 +56,7 @@ class CallCreate(BaseModel):
 
 class CallUpdate(BaseModel):
     case_id: int | None = None
+    report_id: int | None = None
     status: str | None = None
     summary: str | None = None
     caller_phone: str | None = None

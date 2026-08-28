@@ -58,24 +58,27 @@ Style: warm, brisk, plain language. One question at a time. Never read a list
 of options aloud. Keep every turn under about two sentences. You are on a voice
 call, so no markdown, no bullet points, and spell out numbers naturally.
 
-Your job is one of two things:
+Your job is one of two things.
 
-1. Taking a new service request. As soon as you understand roughly what the
-   problem is, call `open_request` right away - do not wait until you have
-   every detail. Then keep the conversation going and call `update_request`
-   each time you learn something new: the caller's name, their callback number,
-   the address of the problem, or a better description. Read the case number
-   back to the caller once, near the end, digit by digit.
+1. Taking a new report. Get the problem and the location first, because the
+   city tracks one case per problem, not one per caller. As soon as you know
+   roughly what and where, call `file_report`. That tool tells you whether this
+   is a new case or a problem already reported by someone else, and you must
+   tell the caller which it was. Then keep talking and call `update_request`
+   each time you learn something new: their name, their callback number, a
+   better location, a better description. Read the case number back once, near
+   the end, digit by digit.
 
-2. Checking on an existing request. Ask for the case number or the phone number
-   they used, call `look_up_request`, then tell them the status in one sentence.
-   If they add new information, call `add_case_note`.
+2. Checking on an existing report. Ask for the case number or the phone number
+   they used, call `look_up_request`, then give the status in one sentence. If
+   they add new information, call `add_case_note`.
 
 Rules:
-- Confirm phone numbers and addresses by repeating them back before you save.
-- If the caller reports an active hazard such as a gas smell, flooding, or a
-  downed line, set priority to high and tell them to hang up and call 911 if
-  anyone is in danger.
+- Confirm phone numbers and locations by repeating them back before you save.
+- If the caller describes an immediate danger to people, such as a sparking or
+  downed power line, a gas smell, active flooding, or a blocked fire exit, call
+  `escalate_to_human` right away with a one line reason, tell the caller a
+  person is being brought in, and tell them to call 911 if anyone is in danger.
 - Never invent a case number, a status, or a repair timeline. If you do not
   know, say you do not know.
 - Open with: "Bayview 311, this is Ava. How can I help you today?"
@@ -90,6 +93,7 @@ class CallState:
     call_id: int | None = None
     case_id: int | None = None
     case_number: str | None = None
+    report_id: int | None = None
     collected: dict[str, str] = field(default_factory=dict)
 
 
@@ -100,36 +104,64 @@ class IntakeAgent(Agent):
     # -- tools ------------------------------------------------------------
 
     @function_tool
-    async def open_request(
+    async def file_report(
         self,
         ctx: RunContext[CallState],
         issue_type: IssueType,
+        location: str,
         description: str,
     ) -> str:
-        """Open a new service request as soon as the problem is understood.
+        """File the caller's report as soon as you know the problem and roughly where it is.
 
-        Call this early, with whatever you have. Details are filled in later
-        with update_request.
+        The backend decides whether this opens a new case or attaches to one
+        another resident already reported. Do not wait for the caller's name or
+        phone number; collect those afterwards with update_request.
 
         Args:
             issue_type: Best guess at the category of the problem.
+            location: Where the problem is, in the caller's words. A street
+                address or an intersection, not their mailing address.
             description: One or two sentences in the caller's own words.
         """
         state = ctx.userdata
         if state.case_id is not None:
-            return f"A request is already open on this call: {state.case_number}."
+            return f"A report is already open on this call: {state.case_number}."
 
-        case = await state.api.create_case(issue_type=issue_type, description=description)
+        result = await state.api.file_report(
+            issue_type=issue_type,
+            location=location,
+            description=description,
+            call_id=state.call_id,
+        )
+        case, report = result["case"], result["report"]
         state.case_id = case["id"]
         state.case_number = case["case_number"]
+        state.report_id = report["id"]
 
         if state.call_id is not None:
-            await state.api.update_call(state.call_id, case_id=case["id"])
+            await state.api.update_call(
+                state.call_id, case_id=case["id"], report_id=report["id"]
+            )
 
-        logger.info("opened case %s", state.case_number)
+        logger.info(
+            "filed report %s on case %s (merged=%s)",
+            report["id"],
+            state.case_number,
+            result["merged"],
+        )
+
+        if result["merged"]:
+            return (
+                f"This problem was already reported. Their report was added to existing "
+                f"case {case['case_number']}, which now has {case['report_count']} reports "
+                f"and is with {case['department'].replace('_', ' ')}. Tell the caller the "
+                f"city already knows about it, that you have added their report, and give "
+                f"them that case number. Then still collect their name and callback number."
+            )
         return (
-            f"Opened case {state.case_number}. Now collect the caller's name, callback "
-            f"number, and the address of the problem, and save each one with update_request."
+            f"Opened new case {case['case_number']}, routed to "
+            f"{case['department'].replace('_', ' ')}. Now collect the caller's name and "
+            f"callback number and save them with update_request."
         )
 
     @function_tool
@@ -138,52 +170,56 @@ class IntakeAgent(Agent):
         ctx: RunContext[CallState],
         caller_name: str | None = None,
         phone: str | None = None,
-        address: str | None = None,
+        location: str | None = None,
         description: str | None = None,
         issue_type: IssueType | None = None,
-        priority: Literal["low", "normal", "high"] | None = None,
     ) -> str:
-        """Save newly learned details onto the open request. Call this often.
+        """Save newly learned details. Call this every time the caller tells you something.
 
         Args:
             caller_name: Caller's full name, as they said it.
             phone: Callback number, digits only.
-            address: Street address of the problem, not the caller's home unless they match.
+            location: A corrected or more precise location for the problem.
             description: An improved description of the problem.
             issue_type: A corrected category, if the first guess was wrong.
-            priority: Raise to high only for an active hazard.
         """
         state = ctx.userdata
         if state.case_id is None:
-            return "No request is open yet. Call open_request first."
+            return "Nothing is open yet. Call file_report first."
 
         if phone:
             phone = "".join(ch for ch in phone if ch.isdigit())
 
-        await state.api.update_case(
-            state.case_id,
-            caller_name=caller_name,
-            phone=phone,
-            address=address,
-            description=description,
-            issue_type=issue_type,
-            priority=priority,
-        )
-        changed = {
+        if state.report_id is not None and (caller_name or phone or description):
+            await state.api.update_report(
+                state.report_id,
+                reporter_name=caller_name,
+                reporter_phone=phone,
+                description=description,
+            )
+
+        if location or description or issue_type:
+            await state.api.update_case(
+                state.case_id,
+                location=location,
+                description=description,
+                issue_type=issue_type,
+            )
+
+        saved = {
             "caller_name": caller_name,
             "phone": phone,
-            "address": address,
+            "location": location,
             "description": description,
             "issue_type": issue_type,
-            "priority": priority,
         }
-        state.collected.update({k: v for k, v in changed.items() if v})
-        logger.info("updated case %s: %s", state.case_number, sorted(state.collected))
+        state.collected.update({k: v for k, v in saved.items() if v})
+        logger.info("updated %s: %s", state.case_number, sorted(state.collected))
         return f"Saved. Case {state.case_number} is up to date."
 
     @function_tool
     async def look_up_request(self, ctx: RunContext[CallState], identifier: str) -> str:
-        """Find an existing request by case number or by the caller's phone number.
+        """Find an existing case by case number or by the caller's phone number.
 
         Args:
             identifier: A case number like SR-123456, or a ten digit phone number.
@@ -191,31 +227,52 @@ class IntakeAgent(Agent):
         state = ctx.userdata
         case = await state.api.lookup_case(identifier)
         if case is None:
-            return "No request found for that. Offer to open a new one."
+            return "No case found for that. Offer to take a new report."
 
         state.case_id = case["id"]
         state.case_number = case["case_number"]
         if state.call_id is not None:
             await state.api.update_call(state.call_id, case_id=case["id"])
 
+        others = case["report_count"] - 1
+        corroboration = f", reported by {others} other resident(s)" if others > 0 else ""
         return (
-            f"Found {case['case_number']}: {case.get('issue_type') or 'unclassified'}, "
-            f"status {case['status']}, opened {case['created_at'][:10]}, "
-            f"reported as: {case.get('description') or 'no description'}."
+            f"Found {case['case_number']}: {case.get('issue_type') or 'unclassified'} at "
+            f"{case.get('location') or 'an unrecorded location'}, status {case['status']}, "
+            f"priority {case['priority']}, with {case['department'].replace('_', ' ')}"
+            f"{corroboration}. Opened {case['created_at'][:10]}."
         )
 
     @function_tool
     async def add_case_note(self, ctx: RunContext[CallState], note: str) -> str:
-        """Append a note to the open request, for anything that is not a stored field.
+        """Append a note to the open case, for anything that is not a stored field.
 
         Args:
             note: What the caller told you, in one sentence.
         """
         state = ctx.userdata
         if state.case_id is None:
-            return "No request is open yet."
+            return "Nothing is open yet."
         await state.api.add_note(state.case_id, note)
         return "Note added."
+
+    @function_tool
+    async def escalate_to_human(self, ctx: RunContext[CallState], reason: str) -> str:
+        """Flag the case for immediate human review. Use for danger to people.
+
+        Args:
+            reason: One line on why a person needs to see this now.
+        """
+        state = ctx.userdata
+        if state.case_id is None:
+            return "File the report first, then escalate it."
+        case = await state.api.escalate(state.case_id, reason)
+        logger.warning("escalated %s: %s", state.case_number, reason)
+        return (
+            f"Case {case['case_number']} is flagged for human review and is now at the top "
+            f"of the queue. Tell the caller a person is being brought in, and to call 911 "
+            f"if anyone is in immediate danger."
+        )
 
     @function_tool
     async def set_status(
@@ -223,17 +280,17 @@ class IntakeAgent(Agent):
         ctx: RunContext[CallState],
         status: Literal["new", "in_progress", "needs_info", "resolved"],
     ) -> str:
-        """Change the status of the open request.
+        """Change the status of the open case.
 
         Use needs_info when the caller could not supply something a crew will
-        need, such as an address.
+        need, such as a location.
 
         Args:
             status: The new status.
         """
         state = ctx.userdata
         if state.case_id is None:
-            return "No request is open yet."
+            return "Nothing is open yet."
         await state.api.update_case(state.case_id, status=status)
         return f"Status set to {status}."
 

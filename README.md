@@ -1,39 +1,89 @@
 # EffiGov take-home: 311 voice intake
 
-A resident calls an AI agent, the agent opens and fills in a service request while they talk, and city staff watch the case appear and change in real time on a dashboard.
+A resident calls an AI agent.
+The agent works out what the problem is and where, and either opens a case or recognises that the city already has one.
+Staff watch all of it happen live in a dashboard.
+
+## The idea worth stealing
+
+Most 311 systems create one ticket per phone call.
+Cities do not have a call problem, they have a pothole problem: six people ring about the same pothole and a crew gets dispatched six times, or five reports sit unread behind the first.
+
+So the model here separates the two:
+
+> A **Case** is the civic incident. A **Report** is one resident's observation of it.
+
+Everything interesting follows from that single distinction.
+A second caller describing the same pothole does not create a second case, it attaches a second report to the first one, and that corroboration is what pushes the case up the queue.
+Both residents keep their own callback number and their own words, so a crew chief can ring either of them.
 
 ## Architecture
 
 ```
 browser mic ──▶ LiveKit room ──▶ voice agent (OpenAI Realtime)
-                                        │ function tools (HTTP)
+                                        │ typed function tools (HTTP)
                                         ▼
                                   FastAPI + SQLite
-                                        │ websocket fan-out
-                                        ▼
-                                 Next.js dashboard
+                                    │        │
+                        deterministic triage │ websocket fan-out
+                        (route / dedupe /    ▼
+                         prioritise)   Next.js dashboard
 ```
 
 Three processes, one database, one source of truth.
 
-The agent holds no state of its own.
+**The agent holds no state of its own.**
 Every fact it collects is written straight to the backend through a function tool, so the dashboard and the database can never disagree about what the caller said.
 
-Every write goes through `server/store.py`, which does three things atomically: update the row, append an `Event` row to the audit log, and broadcast the change on the websocket hub.
+**The model reasons, the backend decides.**
+The language model runs the conversation and extracts intent.
+It never decides which department owns a pothole, whether two callers are describing the same one, or how urgent the result is.
+Those live in `server/triage.py` as pure functions a city could read, argue with, and change without touching a prompt.
+They are also the only part of the system with real unit tests, because they are the part with real policy in them.
+
+**Every write goes through `server/store.py`**, which does three things together: update the row, append an `Event` to the audit log, and broadcast the change on the websocket hub.
 That single choke point is why the audit trail is complete and why the dashboard never has to poll.
 
-The agent opens a case *early*, as soon as it knows roughly what the problem is, then PATCHes fields onto it as the caller supplies them.
-A PATCH only carries fields that actually moved, and the backend broadcasts the list of changed field names, so the dashboard can highlight exactly what just changed rather than re-rendering the whole record.
+**The agent files early and patches often.**
+It calls `file_report` as soon as it knows what and where, then PATCHes name, phone, and detail onto the case as the caller supplies them.
+A PATCH carries only the fields that actually moved, and the backend broadcasts the list of changed field names, so the dashboard highlights exactly what just changed instead of re-rendering the record.
 
 ## Data model
 
-- `Case` - the durable unit of work: caller, issue type, description, status, priority, notes, summary.
-- `Call` - one voice session, optionally attached to a case. A call can exist before a case does.
-- `Turn` - one transcript line in a call.
+```
+Case                     Report                  Call            Event
+  case_number              case_id                 room            case_id
+  issue_type               call_id                 case_id         kind
+  department               reporter_name           report_id       field
+  location                 reporter_phone          status          old_value
+  description              description             summary         new_value
+  status                   created_at              started_at      actor
+  priority                                         ended_at        created_at
+  priority_score
+  report_count
+  escalated
+  summary
+```
+
+- `Case` - one civic incident, no matter how many people report it.
+- `Report` - one resident's account, and how to reach them.
+- `Call` - one voice session. Produces at most one report. Exists from the moment the room opens, which is why a call shows up in the dashboard before anyone knows what it is about.
 - `Event` - append-only audit log: which field changed, from what, to what, by whom.
 
-Separating `Call` from `Case` is what makes the live view work.
-The call record appears in the dashboard the moment the room opens, before the agent knows whether this is a new report or a status check.
+## The three rules in `server/triage.py`
+
+**Routing.** Issue type maps to a department. A corrected issue type re-routes the case automatically and logs a `case.routed` event.
+
+**Deduplication.** A new report merges into an open case when the issue type matches, the case is not resolved, it was opened within 30 days, and the locations overlap.
+Locations are compared as sets of identifying words with street suffixes and filler stripped, so "Shattuck and University" and "University Ave and Shattuck" score 1.0.
+The threshold is deliberately conservative: a false merge hides a resident's report, which is worse than a duplicate case.
+
+**Priority.** `severity x 10 + 15 per corroborating report + 1 per day of age (capped at 10) + 50 if escalated`.
+Three inputs a public works supervisor would actually accept, and the score is shown in the UI so the ranking is legible rather than magic.
+A second reporter on a pothole is enough to move it from normal to high.
+
+**Escalation.** If a caller describes an immediate danger, the agent calls `escalate_to_human`, which flags the case, pins it to the top of the queue, and lights up the dashboard.
+This is the state change, not a dispatch integration.
 
 ## Setup
 
@@ -48,43 +98,54 @@ cd web && npm install && cd ..
 ## Running
 
 ```bash
-./scripts/dev.sh          # livekit-server + api + agent worker + dashboard
-uv run python scripts/seed.py   # optional: a few cases so the list is not empty
+./scripts/dev.sh                       # livekit-server + api + agent worker + dashboard
+uv run python scripts/seed.py          # a few cases so the list is not empty
 ```
 
-Then open <http://localhost:3000> for the staff dashboard and <http://localhost:3000/call> to place a call.
+Staff dashboard at <http://localhost:3000>, resident call page at <http://localhost:3000/call>.
 
-To test the agent without a browser, talk to it straight from the terminal:
+To talk to the agent without a browser:
 
 ```bash
 uv run python -m agent.main console
+```
+
+To prove the whole flow works before a demo, with no microphone:
+
+```bash
+uv run python scripts/demo_rehearsal.py   # two calls, one merge, one escalation
+uv run pytest                             # triage rules and the write path
 ```
 
 ## API
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/api/cases` | Create a case |
-| GET | `/api/cases?q=&status=` | List and filter cases |
-| GET | `/api/cases/lookup?identifier=` | Find by case number or phone, used by the agent |
+| POST | `/api/reports` | File a report. Opens a case or merges into one. Returns `merged` |
+| PATCH | `/api/reports/{id}` | Attach the reporter's name and callback number |
+| GET | `/api/cases?q=&status=` | The queue, ordered by priority score |
+| GET | `/api/cases/lookup?identifier=` | Find by case number or any reporter's phone |
 | GET | `/api/cases/{id}` | One case |
 | PATCH | `/api/cases/{id}` | Partial update, one audit event per changed field |
+| GET | `/api/cases/{id}/reports` | Every resident who reported this incident |
+| POST | `/api/cases/{id}/escalate` | Flag for human review |
 | POST | `/api/cases/{id}/notes` | Append a timestamped note |
 | GET | `/api/cases/{id}/events` | Audit log |
 | POST | `/api/calls` | Start a call record |
 | PATCH | `/api/calls/{id}` | Attach a case, end the call, store the summary |
 | POST | `/api/calls/{id}/turns` | Append a transcript line |
 | POST | `/api/token` | Mint a LiveKit join token for the browser |
-| WS | `/ws` | Live stream of every case, call, and transcript change |
+| WS | `/ws` | Live stream of every case, call, report, and transcript change |
 
 ## Agent tools
 
 | Tool | What it does |
 | --- | --- |
-| `open_request` | Opens a case as soon as the problem is understood |
-| `update_request` | Patches name, phone, address, description, issue type, priority |
+| `file_report` | Files the report as soon as the problem and place are known. Tells the agent whether it merged |
+| `update_request` | Patches the reporter's name and number, and the case's location, description, and type |
 | `look_up_request` | Finds an existing case by case number or phone |
 | `add_case_note` | Appends a note |
+| `escalate_to_human` | Flags an immediate danger for human review |
 | `set_status` | Moves the case between new, in_progress, needs_info, resolved |
 
 ## Tradeoffs
@@ -92,7 +153,10 @@ uv run python -m agent.main console
 Chosen deliberately for a three hour build:
 
 - SQLite with SQLModel, no migrations. The schema is created on startup.
-- One in-process websocket hub instead of Redis pub/sub. Correct for a single-process demo, and the only thing that would change under multiple workers is the transport behind `hub.publish`.
-- OpenAI Realtime as one speech-to-speech model rather than a separate STT, LLM, and TTS chain. Fewer moving parts and fewer API keys, at the cost of provider lock-in and less control over each stage.
+- One in-process websocket hub instead of Redis pub/sub. Correct for a single process, and the only thing that changes under multiple workers is the transport behind `hub.publish`.
+- Deduplication is lexical, not semantic. No embeddings and no geocoder. It is explainable, instant, testable, and offline, which matters more here than catching "the big hole by the Safeway". A geocoder plus a radius check is the obvious production upgrade.
+- OpenAI Realtime as one speech-to-speech model rather than a separate STT, LLM, and TTS chain. Fewer moving parts and one API key, at the cost of provider lock-in.
 - No auth on the dashboard or the API. This is a localhost demo.
 - The call summary is generated once at hangup with a small model, not streamed.
+
+In production the next things would be Postgres with real migrations, a durable event log rather than an in-process hub, idempotency keys on report filing, auth and RBAC on the dashboard, PII handling for the recordings and transcripts, and a human review queue behind the escalation flag rather than just a red banner.

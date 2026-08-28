@@ -1,69 +1,227 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ActiveCallsBar } from "@/components/ActiveCallsBar";
+import { CaseTable, CaseTableSkeleton } from "@/components/CaseTable";
+import { EmptyState, ErrorNote } from "@/components/ui";
+import { api } from "@/lib/api";
+import { DEPARTMENT_LABEL, ISSUE_LABEL, STATUS_LABEL } from "@/lib/labels";
+import { CASE_STATUSES, caseLocation, type Case, type CaseStatus } from "@/lib/types";
+import { useFlash } from "@/lib/useFlash";
+import { useLiveEvents } from "@/lib/useLiveEvents";
+import { useNow } from "@/lib/useNow";
+import { parseServerTime } from "@/lib/time";
+
+type Filter = CaseStatus | "all";
+type SortKey = "recent" | "priority";
+
+const FILTERS: Filter[] = ["all", ...CASE_STATUSES];
+
+const SORTS: { key: SortKey; label: string }[] = [
+  { key: "recent", label: "Recent" },
+  { key: "priority", label: "Priority score" },
+];
+
+function updatedAt(item: Case): number {
+  return parseServerTime(item.updated_at).getTime();
+}
+
+function comparator(sort: SortKey) {
+  return (a: Case, b: Case) => {
+    if (sort === "priority") {
+      const delta = (b.priority_score ?? 0) - (a.priority_score ?? 0);
+      if (delta !== 0) return delta;
+    }
+    return updatedAt(b) - updatedAt(a);
+  };
+}
+
+function matches(item: Case, needle: string): boolean {
+  if (!needle) return true;
+  const haystack = [
+    item.case_number,
+    caseLocation(item),
+    item.description,
+    item.summary,
+    item.escalation_reason,
+    item.issue_type ? ISSUE_LABEL[item.issue_type] : null,
+    item.department ? DEPARTMENT_LABEL[item.department] : null,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(needle);
+}
+
+export default function CasesPage() {
+  const [cases, setCases] = useState<Case[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<Filter>("all");
+  const [sort, setSort] = useState<SortKey>("recent");
+  const { flash: flashRow, flashClass: rowFlashClass } = useFlash<number>();
+  const { flash: flashCount, flashed: flashedCounts } = useFlash<number>();
+  const now = useNow(10_000);
+
+  const load = useCallback(() => {
+    setError(null);
+    api
+      .listCases()
+      .then((rows) => setCases(rows))
+      .catch((cause: Error) => {
+        setCases([]);
+        setError(cause.message);
+      });
+  }, []);
+
+  useEffect(load, [load]);
+
+  const upsert = useCallback(
+    (incoming: Case) => {
+      setCases((previous) => {
+        const rest = (previous ?? []).filter((item) => item.id !== incoming.id);
+        return [incoming, ...rest];
+      });
+      flashRow(incoming.id);
+    },
+    [flashRow],
+  );
+
+  useLiveEvents({
+    "case.created": upsert,
+    "case.updated": (payload) => upsert(payload.case),
+    "case.escalated": upsert,
+    "report.filed": (payload) => {
+      upsert(payload.case);
+      // A merged report is the interesting one: an existing incident just
+      // gained corroboration, so call out the count itself.
+      if (payload.merged) flashCount(payload.case.id);
+    },
+  });
+
+  const counts = useMemo(() => {
+    const tally: Record<Filter, number> = { all: 0, new: 0, in_progress: 0, needs_info: 0, resolved: 0 };
+    for (const item of cases ?? []) {
+      tally.all += 1;
+      tally[item.status] += 1;
+    }
+    return tally;
+  }, [cases]);
+
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return (cases ?? [])
+      .filter((item) => (filter === "all" || item.status === filter) && matches(item, needle))
+      .sort(comparator(sort));
+  }, [cases, filter, query, sort]);
+
+  const loading = cases === null;
+  const filtered = query.trim().length > 0 || filter !== "all";
+  const escalatedCount = (cases ?? []).filter((item) => item.escalated).length;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <div className="flex flex-col gap-5">
+      <ActiveCallsBar />
+
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-[20px] leading-7 font-semibold tracking-tight">Cases</h1>
+          <p className="mt-0.5 text-[13px] text-muted">
+            One case per incident, however many residents call it in.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+        <div className="flex items-center gap-3 pb-1 text-[12px] tabular-nums text-faint">
+          {escalatedCount > 0 ? (
+            <span className="text-red-300">
+              {escalatedCount} escalated
+            </span>
+          ) : null}
+          <span>{loading ? "Loading" : `${visible.length} of ${counts.all} shown`}</span>
         </div>
-      </main>
+      </div>
+
+      {error ? <ErrorNote message={error} onRetry={load} /> : null}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-0 flex-1 sm:max-w-xs">
+          <svg
+            viewBox="0 0 16 16"
+            aria-hidden
+            className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-faint"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          >
+            <circle cx="7" cy="7" r="4.5" />
+            <path d="M10.5 10.5 14 14" strokeLinecap="round" />
+          </svg>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search case, location, issue, department"
+            aria-label="Search cases"
+            className="h-8 w-full rounded-md border border-line bg-panel pr-2.5 pl-8 text-[13px] text-ink placeholder:text-faint focus:border-accent/60 focus:outline-none"
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          {FILTERS.map((value) => {
+            const active = filter === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setFilter(value)}
+                className={`h-8 rounded-md border px-2.5 text-[12px] whitespace-nowrap transition-colors ${
+                  active
+                    ? "border-line-strong bg-raised text-ink"
+                    : "border-line text-muted hover:border-line-strong hover:text-ink"
+                }`}
+              >
+                {value === "all" ? "All" : STATUS_LABEL[value]}
+                <span className="ml-1.5 tabular-nums text-faint">{counts[value]}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="ml-auto flex h-8 items-center gap-0.5 rounded-md border border-line bg-panel p-0.5">
+          {SORTS.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              onClick={() => setSort(option.key)}
+              className={`h-7 rounded px-2 text-[12px] whitespace-nowrap transition-colors ${
+                sort === option.key ? "bg-raised text-ink" : "text-muted hover:text-ink"
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-lg border border-line bg-panel">
+        {loading ? (
+          <CaseTableSkeleton />
+        ) : visible.length === 0 ? (
+          <EmptyState
+            title={filtered ? "No cases match these filters" : "No cases yet"}
+            hint={
+              filtered
+                ? "Clear the search box or pick a different status to widen the queue."
+                : "Cases appear here the moment a resident reports one. Start a call to file the first."
+            }
+          />
+        ) : (
+          <CaseTable
+            cases={visible}
+            flashClass={rowFlashClass}
+            countFlashClass={(id) => flashedCounts.has(id)}
+            now={now}
+          />
+        )}
+      </div>
     </div>
   );
 }

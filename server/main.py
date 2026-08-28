@@ -22,13 +22,16 @@ from sqlmodel import Session, select
 from server import store
 from server.db import get_session, init_db
 from server.hub import hub
-from server.models import Call, CallStatus, Case, Event, Turn
+from server.models import Call, CallStatus, Case, Event, Report, Turn
 from server.schemas import (
     CallCreate,
     CallUpdate,
     CaseCreate,
     CaseUpdate,
+    EscalateRequest,
     NoteCreate,
+    ReportCreate,
+    ReportUpdate,
     TokenRequest,
     TurnCreate,
 )
@@ -93,7 +96,7 @@ async def list_cases(
     status: str | None = None,
     session: Session = Depends(get_session),
 ):
-    statement = select(Case).order_by(Case.updated_at.desc())
+    statement = select(Case).order_by(Case.priority_score.desc(), Case.updated_at.desc())
     if status:
         statement = statement.where(Case.status == status)
     cases = session.exec(statement).all()
@@ -109,11 +112,10 @@ async def list_cases(
                     None,
                     [
                         c.case_number,
-                        c.caller_name,
-                        c.phone,
-                        c.address,
+                        c.location,
                         c.description,
                         c.issue_type.value if c.issue_type else None,
+                        c.department.value if c.department else None,
                     ],
                 )
             ).lower()
@@ -172,6 +174,65 @@ async def case_calls(case_id: int, session: Session = Depends(get_session)):
         select(Call).where(Call.case_id == case_id).order_by(Call.started_at.asc())
     ).all()
     return [store.serialize(c) for c in calls]
+
+
+@app.post("/api/cases/{case_id}/escalate")
+async def escalate_case(
+    case_id: int,
+    body: EscalateRequest,
+    actor: str = "voice_agent",
+    session: Session = Depends(get_session),
+):
+    case = _case_or_404(session, case_id)
+    return store.serialize(store.escalate(session, case, body.reason, actor=actor))
+
+
+@app.get("/api/cases/{case_id}/reports")
+async def case_reports(case_id: int, session: Session = Depends(get_session)):
+    reports = session.exec(
+        select(Report).where(Report.case_id == case_id).order_by(Report.created_at.desc())
+    ).all()
+    return [store.serialize(r) for r in reports]
+
+
+# --------------------------------------------------------------------------
+# Reports: filing one is what triggers deduplication
+# --------------------------------------------------------------------------
+
+
+@app.post("/api/reports", status_code=201)
+async def file_report(
+    body: ReportCreate,
+    actor: str = "voice_agent",
+    session: Session = Depends(get_session),
+):
+    report, case, merged = store.file_report(
+        session,
+        issue_type=body.issue_type,
+        location=body.location,
+        description=body.description,
+        reporter_name=body.reporter_name,
+        reporter_phone=body.reporter_phone,
+        call_id=body.call_id,
+        actor=actor,
+    )
+    return {
+        "report": store.serialize(report),
+        "case": store.serialize(case),
+        "merged": merged,
+    }
+
+
+@app.patch("/api/reports/{report_id}")
+async def patch_report(
+    report_id: int,
+    body: ReportUpdate,
+    session: Session = Depends(get_session),
+):
+    report = session.get(Report, report_id)
+    if not report:
+        raise HTTPException(404, "report not found")
+    return store.serialize(store.update_report(session, report, body.model_dump(exclude_none=True)))
 
 
 # --------------------------------------------------------------------------
