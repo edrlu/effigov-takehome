@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 
 from server.models import Case, CaseStatus, Department, IssueType, Priority
 
@@ -91,13 +92,65 @@ def location_tokens(location: str | None) -> set[str]:
     }
 
 
+# How alike two words have to be before they count as the same one.
+#
+# Every location this compares was transcribed from speech, and a street name
+# is exactly what a recognizer half-hears: "Carleton" comes back as "Carlton",
+# "Shattuck" as "Shatuck". Under exact token matching those are different
+# streets, so the same caller reporting the same pothole twice opened two
+# cases - which is the bug this exists to fix.
+#
+# 0.85 is tight enough that genuinely different streets stay different -
+# "Carleton"/"Bancroft" is 0.17, "Dwight"/"Bancroft" is 0.29 - and loose enough
+# to absorb a dropped or swapped letter. Note that this *loosens* matching, so
+# ``DEDUPE_THRESHOLD`` deliberately does not move with it: a false merge is
+# still worse than a false split, and only one of the two knobs should give.
+WORD_SIMILARITY = 0.85
+
+
+def same_word(a: str, b: str) -> bool:
+    """Whether two transcribed words are the same word, spelling drift aside."""
+    if a == b:
+        return True
+    # A length gap this wide is a different word, not a misheard one, and
+    # skipping the ratio keeps the pairwise loop below cheap.
+    if abs(len(a) - len(b)) > 2:
+        return False
+    return SequenceMatcher(None, a, b).ratio() >= WORD_SIMILARITY
+
+
+def _overlap(left: set[str], right: set[str]) -> int:
+    """How many words the two sets share, counting near-identical ones as shared.
+
+    A greedy one-to-one pairing over sorted tokens: each word on the left
+    claims at most one partner on the right, so "shattuck" cannot match both
+    "shatuck" and "shattuck" and inflate the overlap past the set size. Sorted
+    because a set has no order and this has to answer the same way every time.
+    """
+    unclaimed = sorted(right)
+    shared = 0
+    for word in sorted(left):
+        for index, other in enumerate(unclaimed):
+            if same_word(word, other):
+                del unclaimed[index]
+                shared += 1
+                break
+    return shared
+
+
 def location_similarity(a: str | None, b: str | None) -> float:
-    """Jaccard overlap of identifying words. Order independent by construction,
-    so "Shattuck and University" matches "University and Shattuck" exactly."""
+    """Jaccard overlap of identifying words, compared fuzzily.
+
+    Order independent by construction, so "Shattuck and University" matches
+    "University and Shattuck" exactly - and spelling independent within reason,
+    so "Carleton Street" matches "Carlton Street", which transcription produces
+    constantly and which used to score 0.0.
+    """
     left, right = location_tokens(a), location_tokens(b)
     if not left or not right:
         return 0.0
-    return len(left & right) / len(left | right)
+    shared = _overlap(left, right)
+    return shared / (len(left) + len(right) - shared)
 
 
 def find_duplicate(
