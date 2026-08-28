@@ -36,6 +36,15 @@ Anything that writes a resolution outside `store.update_case` - `scripts/seed.py
 The same obligation covers the rest of a case's story: `scripts/seed.py` writes its backfilled cases straight to the database, so it also has to write the `Report` its `report_count` counts and the `case.created` / `case.routed` / `report.filed` rows the API would have written.
 Skip them and the API still looks correct while the case page shows no reporter and an audit timeline that opens mid-story.
 
+**A stale voice agent worker holds no port, and it steals calls.**
+A worker from any checkout registers with the LiveKit dev server and races the current one; LiveKit hands each call to whichever grabbed it first, so an old build answers in its old words or nobody greets the caller.
+Nothing looks broken, which is what makes it the worst failure mode in the demo.
+`run.sh` clears one before it starts anything, by matching `-m agent.main` machine-wide - a port check cannot find it.
+
+**Hangup must not overwrite a status the agent set.**
+`agent/main.py::_finish` parks a case at `in_progress`, which is right for an intake nobody ruled on and wrong for one the agent resolved mid-call.
+`CallState.status_set` records whether the `set_status` tool ran; `_finish` sends `status=None` when it did, and `CaseAPI.update_case` drops `None` fields, so only the summary lands.
+
 **A panel that follows its own tail must ignore its own scroll events.**
 Setting `scrollTop` fires a `scroll` event a frame later, by which time more rows may have landed and pushed the bottom further away.
 Judging "has the reader scrolled up?" from that stale event unpins the panel permanently after the first burst, and it silently stops following.

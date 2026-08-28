@@ -152,6 +152,9 @@ class CallState:
     sentiment: str = "neutral"
     caller_name: str | None = None
     collected: dict[str, str] = field(default_factory=dict)
+    # Whether ``set_status`` was called during this call. Hangup parks a case
+    # the agent never ruled on; a case it *did* rule on keeps that ruling.
+    status_set: bool = False
     # Set by the entrypoint, which is the only place that holds the room.
     request_hangup: Callable[[], None] | None = None
 
@@ -499,6 +502,8 @@ class IntakeAgent(Agent):
         if state.case_id is None:
             return "Nothing is open yet."
         await state.api.update_case(state.case_id, status=status)
+        # Remembered so the hangup does not park a case the agent resolved.
+        state.status_set = True
         return f"Status set to {status}."
 
 
@@ -579,7 +584,8 @@ async def entrypoint(ctx: JobContext) -> None:
     state.request_hangup = lambda: _spawn(_hangup())
 
     async def _finish() -> None:
-        """On hangup: write a summary, close the call, park the case for staff."""
+        """On hangup: write a summary, close the call, and park the case unless
+        the agent already ruled on it."""
         try:
             if state.call_id is None:
                 return
@@ -589,7 +595,15 @@ async def entrypoint(ctx: JobContext) -> None:
             # a crash between these two calls cannot leave a call looking live.
             await api.update_call(state.call_id, status="completed", summary=summary)
             if state.case_id is not None:
-                await api.update_case(state.case_id, summary=summary, status="in_progress")
+                # The summary always lands. The status only does when the agent
+                # never ruled on this case: parking a fresh intake with the
+                # department is right, overwriting a deliberate ``resolved`` or
+                # ``needs_info`` at hangup is not.
+                await api.update_case(
+                    state.case_id,
+                    summary=summary,
+                    status=None if state.status_set else "in_progress",
+                )
         except Exception:
             logger.exception("failed to close out call")
         finally:
