@@ -363,6 +363,58 @@ def backfill_history() -> None:
         for case in cases:
             session.refresh(case)
 
+        # --- the report and the audit rows every case is born with -----------
+        # ``report_count`` starts at 1, so there has to be a report to count,
+        # and somebody's name and number on it - that is what the case page
+        # shows as the reporter. Written straight rather than through the API
+        # for the same reason as the cases themselves: it happened last week.
+        # The audit rows are the ones ``store.create_case`` and
+        # ``store.file_report`` write, so a seeded case reads on the dashboard
+        # the way one taken by the agent does instead of starting mid-story.
+        # The caller is picked by position, not from RNG, so adding this does
+        # not shift the random sequence the rest of the backfill draws from.
+        for index, case in enumerate(cases):
+            name, phone = CALLERS[index % len(CALLERS)]
+            session.add(
+                Report(
+                    case_id=case.id,
+                    reporter_name=name,
+                    reporter_phone=phone,
+                    description=case.description,
+                    created_at=case.created_at,
+                )
+            )
+            session.add(
+                Event(
+                    case_id=case.id,
+                    kind="case.created",
+                    new_value=case.case_number,
+                    actor="voice_agent",
+                    created_at=case.created_at,
+                )
+            )
+            session.add(
+                Event(
+                    case_id=case.id,
+                    kind="case.routed",
+                    field="department",
+                    new_value=case.department.value,
+                    actor="system",
+                    created_at=case.created_at,
+                )
+            )
+            session.add(
+                Event(
+                    case_id=case.id,
+                    kind="report.filed",
+                    field="report_count",
+                    old_value="0",
+                    new_value="1",
+                    actor="voice_agent",
+                    created_at=case.created_at,
+                )
+            )
+
         # The last four entries of BACKLOG are the ones the "needs attention"
         # cards exist for. They are held out of the lifecycle below so they
         # stay open: a case that is already resolved needs nobody's attention.
@@ -371,16 +423,31 @@ def backfill_history() -> None:
         # --- corroboration: a few incidents several neighbours called about --
         for case in routine[:6]:
             extra = RNG.randint(1, 3)
-            case.report_count += extra
-            for _ in range(extra):
+            # Sorted, because the count each event carries only makes sense in
+            # the order the timeline renders them: 1 -> 2 -> 3, not 1 -> 2 then
+            # 3 -> 4 dated before 2 -> 3.
+            filed_ats = sorted(_aged(case.created_at, now, RNG) for _ in range(extra))
+            for filed_at in filed_ats:
                 name, phone = RNG.choice(CALLERS)
+                case.report_count += 1
                 session.add(
                     Report(
                         case_id=case.id,
                         reporter_name=name,
                         reporter_phone=phone,
                         description=case.description,
-                        created_at=_aged(case.created_at, now, RNG),
+                        created_at=filed_at,
+                    )
+                )
+                session.add(
+                    Event(
+                        case_id=case.id,
+                        kind="report.merged",
+                        field="report_count",
+                        old_value=str(case.report_count - 1),
+                        new_value=str(case.report_count),
+                        actor="voice_agent",
+                        created_at=filed_at,
                     )
                 )
 
