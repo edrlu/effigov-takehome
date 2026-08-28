@@ -7,12 +7,14 @@
  * marker. No key, no account, no map library. Everything else on the card is
  * conditional on how much the geocoder actually resolved - the panel has three
  * honest states (a pin, "still locating", "no match") and never dresses one up
- * as another.
+ * as another. Without a point the same rectangle is filled by
+ * `MapPlaceholder`, which is plainly a drawing rather than a located map.
  */
 
 import type { CaseGeo } from "@/lib/geo";
 import { addressLines, mapsLink, osmEmbedUrl } from "@/lib/geo";
 import { Icon } from "./icons";
+import { MapPlaceholder } from "./MapPlaceholder";
 import { Absent, Card, Pill } from "./ui";
 
 function searchLink(query: string): string {
@@ -36,7 +38,6 @@ export function IncidentLocation({ geo, flashing = false }: { geo: CaseGeo; flas
           </Pill>
         ) : null
       }
-      bodyClassName="px-5 pt-2 pb-4"
     >
       <div className={`-mx-1.5 rounded-lg px-1.5 py-1 ${flashing ? "flash" : ""}`}>
         {address ? (
@@ -51,7 +52,7 @@ export function IncidentLocation({ geo, flashing = false }: { geo: CaseGeo; flas
         )}
       </div>
 
-      <div className="mt-3 h-[190px] overflow-hidden rounded-xl border border-slate-200">
+      <div className="mt-4 h-[190px] overflow-hidden rounded-xl border border-hairline">
         {geo.hasPoint ? (
           // The embed prints its own credit line across the bottom of the map,
           // which wraps to two lines at this width and covers the pin's street.
@@ -63,27 +64,18 @@ export function IncidentLocation({ geo, flashing = false }: { geo: CaseGeo; flas
             // card renders its address instantly either way.
             loading="lazy"
             referrerPolicy="no-referrer-when-downgrade"
-            className="block h-[232px] w-full border-0 bg-slate-100"
+            className="block h-[232px] w-full border-0 bg-inset"
             src={osmEmbedUrl(geo.latitude as number, geo.longitude as number, geo.precision)}
           />
         ) : (
-          <div className="flex h-[190px] flex-col items-center justify-center gap-2 bg-slate-50 px-4 text-center">
-            <Icon name="map" className="h-6 w-6 text-slate-300" />
-            <p className="text-[12.5px] leading-4 text-slate-500">
-              {geo.pending ? "Locating this address" : "No map pin for this address yet"}
-            </p>
-            {/* `unresolved` is the same value whether the geocoder is still out
-                or came back with nothing, so this line has to be true of both. */}
-            <p className="max-w-[230px] text-[11.5px] leading-4 text-slate-400">
-              {geo.pending
-                ? "The pin appears here as soon as the address resolves."
-                : "The caller's words are all the city has so far. A pin appears here if the address resolves."}
-            </p>
-          </div>
+          // `unresolved` is the same value whether the geocoder is still out or
+          // came back with nothing, so the placeholder's caption distinguishes
+          // the two and claims nothing about where the incident is.
+          <MapPlaceholder pending={geo.pending} />
         )}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+      <div className="mt-3.5 flex flex-wrap items-center justify-between gap-2">
         {link ? (
           <a
             href={link}
@@ -119,8 +111,8 @@ export function IncidentLocation({ geo, flashing = false }: { geo: CaseGeo; flas
       ) : null}
 
       {geo.detail ? (
-        <p className="mt-3 flex gap-2 border-t border-slate-100 pt-3 text-[12.5px] leading-5 text-slate-600">
-          <Icon name="crosshair" className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+        <p className="mt-4 flex gap-2.5 border-t border-hairline-soft pt-4 text-[12.5px] leading-5 text-slate-600">
+          <Icon name="crosshair" className="mt-[3px] h-4 w-4 shrink-0 text-slate-400" />
           <span>{geo.detail}</span>
         </p>
       ) : null}

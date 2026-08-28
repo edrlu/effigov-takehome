@@ -234,7 +234,7 @@ export function CasePage({ caseId }: { caseId: number }) {
         <BackLink />
         <SkeletonBar className="mt-4 h-8 w-56" />
         <SkeletonBar className="mt-3 h-4 w-96" />
-        <div className="mt-6 grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
+        <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
           <SkeletonBar className="h-72 rounded-2xl" />
           <SkeletonBar className="h-72 rounded-2xl" />
         </div>
@@ -279,7 +279,7 @@ export function CasePage({ caseId }: { caseId: number }) {
             aria-label="More case actions"
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen((open) => !open)}
-            className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-700"
+            className="flex h-9 w-9 items-center justify-center rounded-xl border border-hairline bg-sheet text-slate-500 transition-colors hover:bg-inset hover:text-slate-700"
           >
             <Icon name="dots" className="h-4 w-4" />
           </button>
@@ -290,7 +290,7 @@ export function CasePage({ caseId }: { caseId: number }) {
             className={`flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[13px] font-medium transition-colors ${
               editing
                 ? "border-blue-300 bg-blue-50 text-blue-700"
-                : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                : "border-hairline bg-sheet text-slate-700 hover:bg-inset"
             }`}
           >
             <Icon name="pencil" className="h-4 w-4" />
@@ -298,7 +298,7 @@ export function CasePage({ caseId }: { caseId: number }) {
           </button>
 
           {menuOpen ? (
-            <div className="absolute top-11 right-0 z-20 w-52 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-lg">
+            <div className="absolute top-11 right-0 z-20 w-52 overflow-hidden rounded-xl border border-slate-300 bg-sheet py-1">
               <button
                 type="button"
                 onClick={() => {
@@ -308,7 +308,7 @@ export function CasePage({ caseId }: { caseId: number }) {
                   });
                   setMenuOpen(false);
                 }}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-slate-700 hover:bg-slate-50"
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-slate-700 hover:bg-inset"
               >
                 <Icon name="hash" className="h-4 w-4 text-slate-400" />
                 {copied ? "Copied" : "Copy case number"}
@@ -319,7 +319,7 @@ export function CasePage({ caseId }: { caseId: number }) {
                   setMenuOpen(false);
                   setTab("Transcript");
                 }}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-slate-700 hover:bg-slate-50"
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-slate-700 hover:bg-inset"
               >
                 <Icon name="mic" className="h-4 w-4 text-slate-400" />
                 View transcript
@@ -330,7 +330,7 @@ export function CasePage({ caseId }: { caseId: number }) {
                   setMenuOpen(false);
                   setTab("Notes");
                 }}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-slate-700 hover:bg-slate-50"
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-slate-700 hover:bg-inset"
               >
                 <Icon name="note" className="h-4 w-4 text-slate-400" />
                 Add a note
@@ -341,7 +341,7 @@ export function CasePage({ caseId }: { caseId: number }) {
       </div>
 
       {editing ? (
-        <div className="mt-4 flex flex-wrap items-end gap-4 rounded-2xl border border-slate-200 bg-white px-5 py-4">
+        <div className="mt-4 flex flex-wrap items-end gap-4 rounded-2xl border border-hairline bg-sheet px-5 py-4">
           <Select
             label="Status"
             value={item.status}
@@ -368,7 +368,7 @@ export function CasePage({ caseId }: { caseId: number }) {
         </div>
       ) : null}
 
-      <nav className="mt-5 flex gap-6 border-b border-slate-200" aria-label="Case sections">
+      <nav className="mt-6 flex gap-6 border-b border-hairline" aria-label="Case sections">
         {TABS.map((name) => (
           <button
             key={name}
@@ -386,10 +386,10 @@ export function CasePage({ caseId }: { caseId: number }) {
         ))}
       </nav>
 
-      <div className="mt-5">
+      <div className="mt-6">
         {tab === "Overview" ? (
-          <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
-            <div className="flex min-w-0 flex-col gap-5">
+          <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
+            <div className="flex min-w-0 flex-col gap-6">
               {item.escalated ? (
                 <div
                   className={`flex gap-3 rounded-2xl border border-red-200 bg-red-50 px-5 py-4 ${
@@ -409,7 +409,7 @@ export function CasePage({ caseId }: { caseId: number }) {
               <CaseSummaryCard item={item} duration={duration} changed={flashed} />
               <CollectedDetails geo={facts.geo} description={facts.description} changed={flashed} />
             </div>
-            <div className="flex min-w-0 flex-col gap-5">
+            <div className="flex min-w-0 flex-col gap-6">
               <ResidentCard facts={facts} changed={flashed} />
               <IncidentLocation
                 geo={facts.geo}
@@ -455,7 +455,7 @@ export function CasePage({ caseId }: { caseId: number }) {
  */
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="cc-light relative left-1/2 -my-6 min-h-[calc(100vh-3.5rem)] w-screen -translate-x-1/2 bg-[#f6f7f9] px-4 py-7 text-slate-900 sm:px-6">
+    <div className="cc-light relative left-1/2 -my-6 min-h-[calc(100vh-3.5rem)] w-screen -translate-x-1/2 bg-sheet px-4 py-7 text-slate-900 sm:px-6">
       <div className="mx-auto w-full max-w-[1180px]">{children}</div>
     </div>
   );
@@ -495,7 +495,7 @@ function Select({
         value={value}
         disabled={busy}
         onChange={(event) => onChange(event.target.value)}
-        className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-[13px] text-slate-900 disabled:opacity-50"
+        className="h-9 rounded-lg border border-hairline bg-sheet px-2.5 text-[13px] text-slate-900 disabled:opacity-50"
       >
         {options.map((option) => (
           <option key={option} value={option}>

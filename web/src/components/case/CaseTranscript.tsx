@@ -122,7 +122,7 @@ export function CaseTranscript({ call, loading = false }: { call: Call | null; l
     <Card
       title="Transcript"
       action={call ? <span className="font-mono text-[12px] text-slate-400">{call.room}</span> : null}
-      bodyClassName="px-0 pt-1 pb-0"
+      flush
     >
       <div ref={tail.ref} onScroll={tail.onScroll} className="scroll-slim max-h-[620px] overflow-y-auto">
         {loading || (call && turns === null) ? (
@@ -144,7 +144,7 @@ export function CaseTranscript({ call, loading = false }: { call: Call | null; l
             {call.status === "active" ? "Waiting for the first words." : "No transcript was captured on this call."}
           </EmptyLine>
         ) : (
-          <ol className="divide-y divide-slate-100" aria-live="polite" aria-relevant="additions">
+          <ol className="divide-y divide-hairline-soft" aria-live="polite" aria-relevant="additions">
             {lines.map((line) => {
               const role = ROLE[line.role] ?? ROLE.agent;
               const provisional = line.kind === "interim";

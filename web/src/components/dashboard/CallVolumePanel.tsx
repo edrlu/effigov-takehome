@@ -51,7 +51,7 @@ export function CallVolumePanel({
               value={days}
               onChange={(event) => onDaysChange(Number(event.target.value))}
               aria-label="Call volume window"
-              className="h-8 appearance-none rounded-lg border border-[#e2e5ea] bg-white pr-7 pl-3 text-[13px] font-medium text-slate-600 transition-colors hover:bg-slate-50 focus:outline-none"
+              className="h-8 appearance-none rounded-lg border border-hairline bg-sheet pr-7 pl-3 text-[13px] font-medium text-slate-600 transition-colors hover:bg-inset focus:outline-none"
             >
               {VOLUME_WINDOWS.map((window) => (
                 <option key={window} value={window}>

@@ -1,10 +1,11 @@
 /**
  * Light-theme primitives for the case detail page.
  *
- * The rest of the app still ships its own surfaces; these are deliberately
- * self-contained so this page owns its palette - white cards on a very light
- * neutral page, hairline borders, soft shadows, one blue accent - without
- * reaching into shared theme tokens.
+ * The surface language is the product-wide one defined in `globals.css`:
+ * `sheet` is both the page and the cards standing on it, so nothing floats.
+ * A card is a hairline border and the whitespace around it - no shadow, no
+ * colour step - and every card here uses the same header and body padding so
+ * the column reads on one vertical rhythm.
  */
 
 import type { ReactNode } from "react";
@@ -15,25 +16,29 @@ export function Card({
   action,
   children,
   className = "",
-  bodyClassName = "px-5 py-4",
+  flush = false,
 }: {
   title?: ReactNode;
   action?: ReactNode;
   children: ReactNode;
   className?: string;
-  bodyClassName?: string;
+  /**
+   * Drop the body padding, for a body that has to reach the card's edges - a
+   * scrolling list with its own row padding, say. Everything else takes the
+   * one padding below, so a column of cards shares a vertical rhythm.
+   */
+  flush?: boolean;
 }) {
+  const body = flush ? "pb-0" : `px-5 pb-5 ${title ? "" : "pt-5"}`;
   return (
-    <section
-      className={`overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-16px_rgba(15,23,42,0.18)] ${className}`}
-    >
+    <section className={`overflow-hidden rounded-2xl border border-hairline bg-sheet ${className}`}>
       {title ? (
-        <header className="flex items-center justify-between gap-3 px-5 pt-4 pb-1">
-          <h2 className="truncate text-[14px] leading-5 font-semibold text-slate-900">{title}</h2>
+        <header className="flex min-h-[26px] items-center justify-between gap-3 px-5 pt-5 pb-3">
+          <h2 className="truncate text-[14px] leading-[26px] font-semibold tracking-tight text-slate-900">{title}</h2>
           {action ? <div className="flex shrink-0 items-center gap-2">{action}</div> : null}
         </header>
       ) : null}
-      <div className={bodyClassName}>{children}</div>
+      <div className={body}>{children}</div>
     </section>
   );
 }
@@ -53,11 +58,11 @@ export function Field({
   className?: string;
 }) {
   return (
-    <div className={`-mx-1.5 flex gap-2.5 rounded-lg px-1.5 py-1.5 ${flashing ? "flash" : ""} ${className}`}>
-      <Icon name={icon} className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+    <div className={`-mx-1.5 flex gap-2.5 rounded-lg px-1.5 py-1 ${flashing ? "flash" : ""} ${className}`}>
+      <Icon name={icon} className="mt-[3px] h-4 w-4 shrink-0 text-slate-400" />
       <div className="min-w-0">
-        <p className="text-[12px] leading-4 text-slate-500">{label}</p>
-        <div className="mt-0.5 text-[13.5px] leading-5 break-words text-slate-900">{children}</div>
+        <p className="text-[12px] leading-[18px] text-slate-500">{label}</p>
+        <div className="mt-1 text-[13.5px] leading-5 break-words text-slate-900">{children}</div>
       </div>
     </div>
   );
@@ -97,7 +102,7 @@ export function Pill({
 }
 
 export function SkeletonBar({ className = "" }: { className?: string }) {
-  return <div className={`animate-pulse rounded bg-slate-200/80 ${className}`} />;
+  return <div className={`animate-pulse rounded bg-inset ${className}`} />;
 }
 
 export function EmptyLine({ children }: { children: ReactNode }) {
@@ -112,7 +117,7 @@ export function ErrorCard({ message, onRetry }: { message: string; onRetry?: () 
         <button
           type="button"
           onClick={onRetry}
-          className="rounded-lg border border-red-300 bg-white px-2.5 py-1 text-[12px] font-medium text-red-700 transition-colors hover:bg-red-100"
+          className="rounded-lg border border-red-300 bg-sheet px-2.5 py-1 text-[12px] font-medium text-red-700 transition-colors hover:bg-red-100"
         >
           Retry
         </button>

@@ -88,7 +88,7 @@ export function RecentCases({
             type="button"
             onClick={() => setExpanded((value) => !value)}
             disabled={!expanded && matching.length <= RECENT_ROWS}
-            className="rounded-lg border border-[#e2e5ea] bg-white px-3 py-1.5 text-[13px] font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-default disabled:text-slate-300 disabled:hover:bg-white"
+            className="rounded-lg border border-hairline bg-sheet px-3 py-1.5 text-[13px] font-medium text-slate-600 transition-colors hover:bg-inset disabled:cursor-default disabled:text-slate-300 disabled:hover:bg-sheet"
           >
             {expanded ? "Show recent" : "View all cases"}
           </button>
@@ -104,13 +104,13 @@ export function RecentCases({
               type="button"
               onClick={() => setFilter(value)}
               className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors ${
-                active ? "bg-[#eef4ff] text-[#2563eb]" : "text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+                active ? "bg-[#eef4ff] text-[#2563eb]" : "text-slate-500 hover:bg-inset hover:text-slate-700"
               }`}
             >
               {value === "all" ? "All" : STATUS_LABEL[value]}
               <span
                 className={`rounded-md px-1.5 py-0.5 text-[11px] tabular-nums ${
-                  active ? "bg-[#dbe6fe] text-[#1d4ed8]" : "bg-slate-100 text-slate-500"
+                  active ? "bg-[#dbe6fe] text-[#1d4ed8]" : "bg-inset text-slate-500"
                 }`}
               >
                 {counts[value]}
@@ -137,7 +137,7 @@ export function RecentCases({
         <div className="overflow-x-auto">
           <table className="w-full min-w-[860px] border-collapse text-left">
             <thead>
-              <tr className="border-y border-[#eef0f3] bg-[#fafbfc]">
+              <tr className="border-y border-hairline-soft bg-inset">
                 <th className={`${HEAD} w-[15%]`}>Case ID</th>
                 <th className={`${HEAD} w-[16%]`}>Resident</th>
                 <th className={`${HEAD} w-[16%]`}>Issue Type</th>
@@ -155,7 +155,7 @@ export function RecentCases({
                   <tr
                     key={item.id}
                     onClick={() => router.push(`/cases/${item.id}`)}
-                    className={`cursor-pointer border-b border-[#f1f3f5] transition-colors hover:bg-[#fafbfc] ${
+                    className={`cursor-pointer border-b border-hairline-soft transition-colors hover:bg-inset ${
                       fieldFlash(item.id, "created") ? "flash" : ""
                     }`}
                   >

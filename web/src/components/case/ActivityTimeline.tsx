@@ -98,7 +98,7 @@ export function ActivityTimeline({
   const hidden = newestFirst.length - shown.length;
 
   return (
-    <Card title="Activity Timeline" bodyClassName="px-5 pt-2 pb-4">
+    <Card title="Activity Timeline">
       {events === null ? (
         <div className="space-y-4 py-2">
           {Array.from({ length: limit ?? 4 }).map((_, index) => (
@@ -119,9 +119,12 @@ export function ActivityTimeline({
             const style = KIND_STYLE[event.kind] ?? FALLBACK_STYLE;
             const last = index === shown.length - 1;
             return (
-              <li key={event.id} className="relative flex gap-3 pb-4 last:pb-1">
+              <li key={event.id} className="relative flex gap-3.5 pb-5 last:pb-0">
                 {!last ? (
-                  <span aria-hidden className="absolute top-8 bottom-0 left-[13.5px] w-px bg-slate-200" />
+                  // The dot is 28px tall and its centre sits at x=14, so the
+                  // connector runs from just under one dot to just above the
+                  // next on that exact centre line - no kink, no float.
+                  <span aria-hidden className="absolute top-[30px] bottom-[2px] left-[13.5px] w-px bg-slate-200" />
                 ) : null}
                 <span
                   className={`relative z-10 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border ${style.tone}`}
@@ -134,13 +137,13 @@ export function ActivityTimeline({
                   }`}
                 >
                   <div className="min-w-0">
-                    <p className="text-[13px] leading-5 font-semibold text-slate-900">
+                    <p className="text-[13px] leading-[18px] font-semibold text-slate-900">
                       {EVENT_LABEL[event.kind as EventKind] ?? event.kind}
                     </p>
-                    <p className="text-[12px] leading-5 break-words text-slate-500">{subtitle(event)}</p>
+                    <p className="mt-0.5 text-[12px] leading-[18px] break-words text-slate-500">{subtitle(event)}</p>
                   </div>
                   <span
-                    className="shrink-0 pt-0.5 text-[11.5px] whitespace-nowrap text-slate-400"
+                    className="shrink-0 pt-px text-[11.5px] leading-[18px] whitespace-nowrap text-slate-400"
                     title={formatDateTime(event.created_at)}
                   >
                     {relativeTime(event.created_at, now)}
@@ -153,15 +156,19 @@ export function ActivityTimeline({
       )}
 
       {onViewAll && events !== null ? (
-        <button
-          type="button"
-          onClick={onViewAll}
-          className="mt-1 inline-flex items-center gap-1 border-t border-slate-100 pt-3 text-[12.5px] font-medium text-blue-600 transition-colors hover:text-blue-700"
-        >
-          View all activity
-          {hidden > 0 ? <span className="text-slate-400 tabular-nums">({hidden} more)</span> : null}
-          <Icon name="chevron-right" className="h-3.5 w-3.5" />
-        </button>
+        // The rule sits on the wrapper, not the button: a hairline that stops
+        // at the end of the label reads as a stray underline.
+        <div className="mt-4 border-t border-hairline-soft pt-4">
+          <button
+            type="button"
+            onClick={onViewAll}
+            className="inline-flex items-center gap-1 text-[12.5px] font-medium text-blue-600 transition-colors hover:text-blue-700"
+          >
+            View all activity
+            {hidden > 0 ? <span className="text-slate-400 tabular-nums">({hidden} more)</span> : null}
+            <Icon name="chevron-right" className="h-3.5 w-3.5" />
+          </button>
+        </div>
       ) : null}
     </Card>
   );
