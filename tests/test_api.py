@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
@@ -88,6 +90,115 @@ def test_the_agent_can_find_a_case_by_either_reporters_phone(client):
     )
     found = client.get("/api/cases/lookup", params={"identifier": "(510) 555-1212"}).json()
     assert found["case_number"] == first["case"]["case_number"]
+
+
+def test_lookup_offers_the_last_four_digits_and_never_the_whole_number(client):
+    """The agent verifies a caller against these, so this is the whole payload.
+
+    Anyone who has a case number can ask about the case. If the lookup handed
+    back a full phone number, the agent would be one prompt away from reading a
+    resident's number to a stranger.
+    """
+    filed = client.post("/api/reports", json=POTHOLE).json()
+    client.patch(
+        f"/api/reports/{filed['report']['id']}",
+        json={"reporter_name": "Priya Raman", "reporter_phone": "5105550188"},
+    )
+
+    found = client.get(
+        "/api/cases/lookup", params={"identifier": filed["case"]["case_number"]}
+    ).json()
+
+    assert found["reporter"] == {"name": "Priya Raman", "phone_last4": "0188"}
+    assert "5105550188" not in json.dumps(found)
+
+
+def test_lookup_verifies_a_second_reporter_against_their_own_number(client):
+    """Looked up by phone, the person on file is whoever that number belongs to.
+
+    Verifying a second reporter against the *first* reporter's digits would
+    fail every time and push them into filing a duplicate of their own report.
+    """
+    filed = client.post("/api/reports", json=POTHOLE).json()
+    client.patch(
+        f"/api/reports/{filed['report']['id']}",
+        json={"reporter_name": "Edward Lu", "reporter_phone": "5105551212"},
+    )
+    second = client.post(
+        "/api/reports",
+        json={**POTHOLE, "reporter_name": "Priya Raman", "reporter_phone": "5105550188"},
+    ).json()
+    assert second["merged"] is True
+
+    found = client.get("/api/cases/lookup", params={"identifier": "5105550188"}).json()
+    assert found["reporter"] == {"name": "Priya Raman", "phone_last4": "0188"}
+
+
+def test_lookup_says_nothing_to_verify_against_when_nobody_left_details(client):
+    filed = client.post("/api/reports", json=POTHOLE).json()
+    found = client.get(
+        "/api/cases/lookup", params={"identifier": filed["case"]["case_number"]}
+    ).json()
+    assert found["reporter"] is None
+
+
+def test_an_unverified_caller_joins_the_case_they_named_as_a_new_reporter(client):
+    """A second person calling about SR-x is a new reporter on that incident.
+
+    Pinning the report to the case they named keeps them off the duplicate
+    search, which could otherwise land them on a different case or open one.
+    """
+    filed = client.post("/api/reports", json=POTHOLE).json()
+    case = filed["case"]
+    client.patch(
+        f"/api/reports/{filed['report']['id']}",
+        json={"reporter_name": "Edward Lu", "reporter_phone": "5105551212"},
+    )
+
+    joined = client.post(
+        "/api/reports",
+        json={
+            "case_id": case["id"],
+            "reporter_name": "Priya Raman",
+            "reporter_phone": "5105550188",
+            "description": "Still there this morning, someone nearly went into it.",
+        },
+    ).json()
+
+    assert joined["merged"] is True
+    assert joined["case"]["id"] == case["id"]
+    assert joined["case"]["report_count"] == 2
+
+    reports = client.get(f"/api/cases/{case['id']}/reports").json()
+    assert {r["reporter_name"] for r in reports} == {"Edward Lu", "Priya Raman"}
+
+
+def test_a_second_reporter_does_not_re_categorise_the_case_they_joined(client):
+    """They are adding their account, not overruling the city's routing."""
+    case = client.post("/api/reports", json=POTHOLE).json()["case"]
+
+    client.post(
+        "/api/reports",
+        json={
+            "case_id": case["id"],
+            "issue_type": "graffiti",
+            "issue_type_confidence": 0.99,
+            "location": "Somewhere else entirely",
+            "reporter_name": "Priya Raman",
+            "reporter_phone": "5105550188",
+        },
+    )
+
+    after = client.get(f"/api/cases/{case['id']}").json()
+    assert after["issue_type"] == "pothole"
+    assert after["location"] == POTHOLE["location"]
+
+
+def test_filing_against_a_case_that_does_not_exist_is_a_404(client):
+    response = client.post(
+        "/api/reports", json={"case_id": 9999, "reporter_name": "Nobody"}
+    )
+    assert response.status_code == 404
 
 
 def test_correcting_the_issue_type_re_routes_the_case(client):

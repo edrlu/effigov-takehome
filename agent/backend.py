@@ -111,6 +111,8 @@ class CaseAPI:
         return r.json()
 
     async def lookup_case(self, identifier: str) -> dict[str, Any] | None:
+        """The case, plus a ``reporter`` block carrying the name on file and the
+        last four digits of their number - deliberately never the whole one."""
         r = await self._client.get("/api/cases/lookup", params={"identifier": identifier})
         if r.status_code == 404:
             return None

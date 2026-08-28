@@ -45,6 +45,11 @@ Nothing looks broken, which is what makes it the worst failure mode in the demo.
 `agent/main.py::_finish` parks a case at `in_progress`, which is right for an intake nobody ruled on and wrong for one the agent resolved mid-call.
 `CallState.status_set` records whether the `set_status` tool ran; `_finish` sends `status=None` when it did, and `CaseAPI.update_case` drops `None` fields, so only the summary lands.
 
+**The lookup payload must never carry a phone number.**
+Anyone holding a case number can ask about the case, so the caller on the line is not the reporter until the agent has verified them - and it can only verify against something it is allowed to say aloud.
+`GET /api/cases/lookup` therefore returns `reporter: {name, phone_last4}` and no more of the number than that (`store.reporter_on_file`), which is what makes "does your callback number end in 0188?" the only question the agent *can* ask.
+Putting the full number back in the payload puts the agent one prompt away from reading a resident's number to a stranger. A caller who fails that check is a new reporter on the same incident, not the original one: `POST /api/reports` with `case_id` pins their report to the case they named instead of sending them back through the duplicate search.
+
 **A panel that follows its own tail must ignore its own scroll events.**
 Setting `scrollTop` fires a `scroll` event a frame later, by which time more rows may have landed and pushed the bottom further away.
 Judging "has the reader scrolled up?" from that stale event unpins the panel permanently after the first burst, and it silently stops following.
