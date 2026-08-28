@@ -71,6 +71,17 @@ class ReportUpdate(BaseModel):
     reporter_name: str | None = None
     reporter_phone: str | None = None
     description: str | None = None
+    # This caller's own account of where the problem is. The case's canonical
+    # ``location`` is only changed by staff, or by promoting a report onto it.
+    location: str | None = None
+
+
+class PromoteReport(BaseModel):
+    """Adopt one report's wording as the case's own. Staff action."""
+
+    report_id: int
+    # Which of the report's fields to take. Empty means all promotable ones.
+    fields: list[str] = Field(default_factory=list)
 
 
 class CallCreate(BaseModel):

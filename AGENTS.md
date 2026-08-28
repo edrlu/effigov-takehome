@@ -14,6 +14,14 @@ For the same reason `_log` snapshots each `Event` with `serialize` at write time
 **Geocoding is off by default in the suite, and must stay that way.**
 `server/geocode.py` runs as a FastAPI background task that opens its own `Session(server.db.engine)` - not the test-overridden one - so an un-gated geocode in a test both reaches the network and writes to the developer's own `effigov.db`. `tests/conftest.py` sets `EFFIGOV_GEOCODE=0` for the whole suite; a test that wants the real path re-enables it and stubs `geocode._fetch`.
 
+**Two background writers must stay switched off in the suite.**
+`server/geocode.py` and `server/summarize.py` both run as FastAPI background tasks that open their own `Session(server.db.engine)` - not the test-overridden one - so an un-gated one in a test reaches the network *and* writes to the developer's own `effigov.db`. `TestClient` runs background tasks inline, so the summariser also sits through its own debounce and the suite appears to hang.
+`tests/conftest.py` sets `EFFIGOV_GEOCODE=0` and `EFFIGOV_SUMMARY=0` for the whole suite; a test that wants a real path re-enables it and stubs the module's fetch.
+
+**A case is re-corroborated on every report, and the expensive half is not.**
+`store.recorroborate` re-reads a case's reports on every file, update and fold: distinct reporters, priority, and the details residents disagree about (`triage.corroborate_locations`). It is deterministic and cheap, so it runs inline.
+Regenerating the prose summary across all the accounts is a model call and lives in `server/summarize.py`, scheduled the way geocoding is. Never put it back on the request path - a resident's report must not wait on it and must not fail with it.
+
 **A call is linked to its case through the report, not always through `Call.case_id`.**
 `GET /api/cases/{id}/calls` returns nothing for a call whose `case_id` was never backfilled, even though the call produced a report on that case. Anything that needs the transcript or the call duration for a case has to fall back to the newest report's `call_id`; `web/src/components/case/CasePage.tsx` does exactly that.
 

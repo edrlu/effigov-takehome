@@ -33,7 +33,21 @@ export type LiveMessage =
   | { type: "case.created"; payload: Case }
   | { type: "case.updated"; payload: { case: Case; changed: string[] } }
   | { type: "case.escalated"; payload: Case }
-  | { type: "report.filed"; payload: { report: Report; case: Case; merged: boolean; similarity: number } }
+  | {
+      type: "report.filed";
+      payload: {
+        report: Report;
+        case: Case;
+        /** Folded onto a case the city already had, rather than opening one. */
+        merged: boolean;
+        /**
+         * This number already had a report on the case: their own account was
+         * replaced, and the count of distinct residents did not move.
+         */
+        repeat?: boolean;
+        similarity: number;
+      };
+    }
   | { type: "report.updated"; payload: { report: Report; case_id: number; changed: string[] } }
   | { type: "call.started"; payload: Call }
   | { type: "call.updated"; payload: { call: Call; changed: string[] } }

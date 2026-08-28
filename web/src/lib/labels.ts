@@ -95,7 +95,7 @@ export const FIELD_LABEL: Record<string, string> = {
   location: "Location",
   department: "Department",
   priority_score: "Priority score",
-  report_count: "Reports",
+  report_count: "Residents reporting",
   escalated: "Escalated",
   escalation_reason: "Escalation reason",
   issue_type: "Issue type",
@@ -170,6 +170,24 @@ export function actorLabel(actor: string): string {
 export function prettyValue(value: string | null): string {
   if (value === null || value === "") return "empty";
   return value.replace(/_/g, " ");
+}
+
+/**
+ * Corroboration, in people.
+ *
+ * `report_count` counts distinct residents, so it must never be shown as a
+ * bare number that could be read as re-dials from one caller. Zero is a real
+ * answer and says so rather than being softened to one.
+ */
+export function reportersPhrase(count: number): string {
+  if (count <= 0) return "No residents on file yet";
+  return `${count} resident${count === 1 ? "" : "s"} reported this`;
+}
+
+/** The same fact where only the noun fits: "4 residents", "1 resident". */
+export function reportersCount(count: number): string {
+  if (count <= 0) return "No reports yet";
+  return `${count} resident${count === 1 ? "" : "s"}`;
 }
 
 /** Render a stored digit string the way a staffer would dial it. */

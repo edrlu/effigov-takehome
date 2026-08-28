@@ -10,6 +10,7 @@ import type { SVGProps } from "react";
 
 export type IconName =
   | "user"
+  | "users"
   | "tag"
   | "calendar"
   | "phone"
@@ -31,13 +32,24 @@ export type IconName =
   | "building"
   | "map"
   | "refresh"
-  | "plus";
+  | "plus"
+  | "arrow-up"
+  | "lock";
 
 const PATHS: Record<IconName, React.ReactNode> = {
   user: (
     <>
       <circle cx="8" cy="5.25" r="2.75" />
       <path d="M2.75 13.75c0-2.35 2.35-3.75 5.25-3.75s5.25 1.4 5.25 3.75" />
+    </>
+  ),
+  // Two figures on the same grid as `user`, the back one clipped by the front
+  // so the pair reads at 16px instead of blurring into one shape.
+  users: (
+    <>
+      <circle cx="6.4" cy="5.4" r="2.6" />
+      <path d="M1.6 13.75c0-2.2 2.15-3.5 4.8-3.5s4.8 1.3 4.8 3.5" />
+      <path d="M11 3.2a2.6 2.6 0 0 1 0 4.7M12.2 10.6c1.4.5 2.2 1.6 2.2 3.15" />
     </>
   ),
   tag: (
@@ -120,6 +132,14 @@ const PATHS: Record<IconName, React.ReactNode> = {
   map: <path d="M2.5 3.9 6 2.6l4 1.4 3.5-1.3v9.4L10 13.4l-4-1.4-3.5 1.3zM6 2.6v9.4M10 4v9.4" />,
   refresh: <path d="M13.25 8a5.25 5.25 0 1 1-1.6-3.78M13.4 2.4v3.1h-3.1" />,
   plus: <path d="M8 3.25v9.5M3.25 8h9.5" />,
+  // Promote: a report's wording moving up onto the case.
+  "arrow-up": <path d="M8 13V3.4M4.1 7.3 8 3.4l3.9 3.9" />,
+  lock: (
+    <>
+      <rect x="3.25" y="7" width="9.5" height="6.5" rx="1.5" />
+      <path d="M5.6 7V5.1a2.4 2.4 0 0 1 4.8 0V7" />
+    </>
+  ),
 };
 
 export function Icon({

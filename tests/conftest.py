@@ -19,6 +19,11 @@ from server.main import app
 # setting it here covers every test.
 os.environ["EFFIGOV_GEOCODE"] = "0"
 
+# Regenerating a case summary is a model call on a background task, and
+# TestClient runs background tasks inline - so left on, the suite would both
+# reach the provider and sit through the debounce. Same switch, same reason.
+os.environ["EFFIGOV_SUMMARY"] = "0"
+
 
 def client_for(engine) -> Iterator[TestClient]:
     SQLModel.metadata.create_all(engine)

@@ -72,6 +72,14 @@ export interface Case {
   report_count: number;
   escalated: boolean;
   escalation_reason: string | null;
+  /**
+   * Field names the residents on this case do not agree about - "location",
+   * "issue_type". Recomputed from their reports every time one lands, and
+   * carried rather than resolved: two people putting the pothole three blocks
+   * apart is a fact a dispatcher needs, not a tie to break by arrival order.
+   * The `changed` list names it `contested_fields`; the payload key is this.
+   */
+  contested?: string[];
   summary: string | null;
   notes?: string | null;
   created_at: string;
@@ -83,6 +91,14 @@ export interface Case {
   address?: string | null;
 }
 
+/**
+ * One resident's standing account of an incident.
+ *
+ * Keyed by phone number within a case, so one neighbour ringing back three
+ * times is one report, not three. That is what makes `Case.report_count` a
+ * count of people. A report is supporting evidence: staff work the Case, and
+ * reach for a report when they need to ring somebody back.
+ */
 export interface Report {
   id: number;
   case_id: number;
@@ -90,8 +106,29 @@ export interface Report {
   reporter_name: string | null;
   reporter_phone: string | null;
   description: string | null;
+  /**
+   * What this caller said the problem was, stored as given - before the
+   * confidence gate that decides how the *case* is classified. One resident
+   * saying water leak where the case says pothole is worth a dispatcher's
+   * attention, so it is kept rather than discarded by the gate.
+   */
+  issue_type?: IssueType | null;
+  /**
+   * This resident's own words for where the problem is, kept beside the case's
+   * canonical `location` so a later, vaguer caller cannot overwrite a sharper
+   * one. Staff move a better account up with `api.promoteReport`.
+   */
+  location: string | null;
   created_at: string;
 }
+
+/**
+ * The report fields a staff member may adopt onto the case. Mirrors
+ * `PROMOTABLE_FIELDS` in `server/store.py`; the backend refuses anything else.
+ */
+export const PROMOTABLE_FIELDS = ["description", "location"] as const;
+
+export type PromotableField = (typeof PROMOTABLE_FIELDS)[number];
 
 export type Sentiment = "positive" | "neutral" | "negative";
 
@@ -106,6 +143,14 @@ export interface Call {
   summary: string | null;
   started_at: string;
   ended_at: string | null;
+
+  /**
+   * Whether this call produced a report. Said out loud by the backend rather
+   * than inferred from a null `report_id`, because a call with no report is
+   * legitimate - somebody who hung up, or who only wanted a status - and that
+   * has to be tellable from a record whose link was never written.
+   */
+  produced_report?: boolean;
 
   /**
    * Caller-identity and live-narration fields the call console shows. Every one
@@ -184,9 +229,31 @@ export const CASE_STATUSES: CaseStatus[] = ["new", "in_progress", "needs_info", 
 
 export const PRIORITIES: Priority[] = ["low", "normal", "high"];
 
-/** Reports and cases both went through a shape change; read defensively. */
-export function reportCount(item: Case): number {
-  return typeof item.report_count === "number" && item.report_count > 0 ? item.report_count : 1;
+/**
+ * How many separate residents have reported this case.
+ *
+ * `report_count` is a count of people, not of calls: the backend keys one
+ * report per phone number per case. Zero is a real answer - a case can exist
+ * before its first report is filed - so it is reported as zero rather than
+ * rounded up to one.
+ */
+export function reporterCount(item: Pick<Case, "report_count">): number {
+  const count = item.report_count;
+  return typeof count === "number" && count > 0 ? count : 0;
+}
+
+/**
+ * A completed call is the record of a conversation that happened, and the
+ * backend answers 409 to anything that would rewrite it. Nothing may offer an
+ * edit control for one: a control that will be refused is worse than none.
+ */
+export function isSealed(call: Pick<Call, "status">): boolean {
+  return call.status === "completed";
+}
+
+/** Do the residents on this case disagree about this field? */
+export function isContested(item: Pick<Case, "contested">, field: string): boolean {
+  return Array.isArray(item.contested) && item.contested.includes(field);
 }
 
 export function caseLocation(item: Case): string | null {

@@ -56,9 +56,6 @@ export default function DashboardPage() {
   const [attention, setAttention] = useState<Loaded<AttentionGroup[]>>(pending);
   const [statsLoading, setStatsLoading] = useState(true);
 
-  /** Bumped when a report lands, so cached resident names are re-read. */
-  const [reportsToken, setReportsToken] = useState(0);
-
   const { flash: flashField, flashed: flashedFields } = useFlash<string>();
   const now = useNow(10_000);
 
@@ -183,12 +180,13 @@ export default function DashboardPage() {
       },
       "report.filed": (payload) => {
         upsert(payload.case);
-        highlight(payload.case, payload.merged ? ["report_count"] : ["created"]);
-        setReportsToken((token) => token + 1);
+        // A repeat is the same resident ringing back: the count of *people*
+        // did not move, so nothing about corroboration should light up.
+        highlight(
+          payload.case,
+          payload.repeat ? [] : payload.merged ? ["report_count"] : ["created"],
+        );
         scheduleStatsRefresh();
-      },
-      "report.updated": () => {
-        setReportsToken((token) => token + 1);
       },
       // A call starting or ending moves the Live Calls tile and the volume
       // chart even when no case changed.
@@ -238,7 +236,6 @@ export default function DashboardPage() {
           loading={cases === null}
           error={casesError}
           fieldFlash={fieldFlash}
-          reportsToken={reportsToken}
           now={now}
         />
 

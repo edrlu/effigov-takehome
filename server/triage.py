@@ -9,6 +9,7 @@ live in code a staffer could review rather than inside a prompt.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from server.models import Case, CaseStatus, Department, IssueType, Priority
@@ -132,6 +133,101 @@ def find_duplicate(
             best = (case, score)
 
     return best
+
+
+# --------------------------------------------------------------------------
+# Corroboration: what several residents' accounts agree on, and what they do not
+# --------------------------------------------------------------------------
+#
+# Independent residents describing the same problem is evidence, and where they
+# disagree a dispatcher needs to know rather than be handed one account picked
+# arbitrarily. Two people saying "Shattuck and Dwight" and "Shattuck and
+# Bancroft" are three blocks apart; averaging them sends a crew to neither.
+#
+# Deterministic and pure, like routing and deduplication above, for the same
+# reason: this is policy a city should be able to read and argue with, and it
+# has to be testable without a model call.
+
+
+@dataclass(frozen=True)
+class Agreement:
+    """How several accounts of one detail line up."""
+
+    field: str
+    # The account the largest group gives, or ``None`` when nobody agrees with
+    # anybody. Never a blend of two: a made-up middle is the one answer no
+    # resident actually reported.
+    consensus: str | None
+    agreeing: int
+    total: int
+    # Every distinct account, in the order they were reported, so staff can
+    # read the disagreement instead of being told there is one.
+    accounts: list[str]
+
+    @property
+    def contested(self) -> bool:
+        """Two or more residents gave accounts that do not describe the same thing."""
+        return len(self.accounts) > 1
+
+    @property
+    def confirmed(self) -> bool:
+        """More than one resident independently gave the same account."""
+        return self.agreeing > 1 and not self.contested
+
+
+def _cluster(values: list[str], same) -> list[list[str]]:
+    """Group accounts that describe the same thing, in the order given.
+
+    Single-link and order-stable: an account joins the first existing group it
+    matches, so the same reports in the same order always produce the same
+    grouping. No thresholds beyond the one ``same`` applies.
+    """
+    groups: list[list[str]] = []
+    for value in values:
+        for group in groups:
+            if same(group[0], value):
+                group.append(value)
+                break
+        else:
+            groups.append([value])
+    return groups
+
+
+def _agreement(field: str, values: list[str | None], same) -> Agreement:
+    present = [v.strip() for v in values if v and v.strip()]
+    groups = _cluster(present, same)
+    groups.sort(key=lambda g: (-len(g), present.index(g[0])))
+    return Agreement(
+        field=field,
+        consensus=groups[0][0] if groups else None,
+        agreeing=len(groups[0]) if groups else 0,
+        total=len(present),
+        accounts=[g[0] for g in groups],
+    )
+
+
+def corroborate_locations(accounts: list[str | None]) -> Agreement:
+    """Do the residents on this case agree about where the problem is?
+
+    Compared with the same token overlap that decides whether two reports are
+    the same incident at all, so "Shattuck Ave" and "Shattuck Avenue" are one
+    account and "Shattuck and Dwight" and "Shattuck and Bancroft" are two.
+    """
+    return _agreement(
+        "location",
+        accounts,
+        lambda a, b: location_similarity(a, b) >= DEDUPE_THRESHOLD,
+    )
+
+
+def corroborate_issue_types(accounts: list[str | None]) -> Agreement:
+    """Do they agree about what kind of problem it is? Exact match; it is an enum."""
+    return _agreement("issue_type", accounts, lambda a, b: a == b)
+
+
+def contested_fields(*agreements: Agreement) -> list[str]:
+    """The details residents do not agree on, for the case to carry."""
+    return [a.field for a in agreements if a.contested]
 
 
 # --------------------------------------------------------------------------

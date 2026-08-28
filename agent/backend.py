@@ -55,8 +55,9 @@ class CaseAPI:
 
     # -- reports ----------------------------------------------------------
     async def file_report(self, **fields: Any) -> dict[str, Any]:
-        """Returns {report, case, merged}. The backend decides whether this is a
-        new incident or another resident reporting one the city already knows."""
+        """Returns {report, case, merged, repeat}. The backend decides whether this
+        is a new incident or another resident reporting one the city already knows,
+        and ``repeat`` says this caller already had a report on it."""
         r = await self._client.post(
             "/api/reports",
             params={"actor": "voice_agent"},
@@ -70,6 +71,12 @@ class CaseAPI:
             f"/api/reports/{report_id}",
             json={k: v for k, v in fields.items() if v is not None},
         )
+        r.raise_for_status()
+        return r.json()
+
+    async def case_reports(self, case_id: int) -> list[dict[str, Any]]:
+        """Every resident's account on one case, oldest first."""
+        r = await self._client.get(f"/api/cases/{case_id}/reports")
         r.raise_for_status()
         return r.json()
 

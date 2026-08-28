@@ -10,7 +10,7 @@
 
 import { readGeo, type CaseGeo } from "@/lib/geo";
 import { parseServerTime } from "@/lib/time";
-import type { Call, Case, Report } from "@/lib/types";
+import { reporterCount, type Call, type Case, type Report } from "@/lib/types";
 
 export type StepState = "complete" | "current" | "pending";
 
@@ -26,6 +26,18 @@ export interface CaseFacts {
   geo: CaseGeo;
   /** The most recent report on this case, which is the one being filed live. */
   report: Report | null;
+  /** Every report on the case, oldest first: the order they came in. */
+  reporters: Report[];
+  /**
+   * How many separate residents reported this, from the case itself.
+   *
+   * The case's own `report_count` is authoritative - the backend derives it
+   * from the reports and keys one per phone number - and it is also the only
+   * answer available before the reports have loaded. The loaded rows are used
+   * only when they say *more* than the case does, which is the window between
+   * a `report.filed` frame landing and the case snapshot catching up.
+   */
+  reporterCount: number;
   /** The most recent call linked to the case. */
   call: Call | null;
   residentName: string | null;
@@ -34,6 +46,10 @@ export interface CaseFacts {
   firstReportedAt: string | null;
   description: string | null;
   callLive: boolean;
+}
+
+function caseReporterCount(item: Case | null): number {
+  return reporterCount(item ?? { report_count: 0 });
 }
 
 function text(value: string | null | undefined): string | null {
@@ -59,9 +75,27 @@ export function newestCall(calls: Call[]): Call | null {
   return byNewest(calls);
 }
 
+/**
+ * The report on this case whose call is the one given, if any.
+ *
+ * `Call.report_id` is the link the backend writes; the fallback covers a call
+ * recorded before that column existed, which still knows its report through
+ * the report's own `call_id`.
+ */
+export function reportForCall(reports: Report[], call: Call | null): Report | null {
+  if (!call) return null;
+  const linked = call.report_id ?? null;
+  return (
+    reports.find((row) => row.id === linked) ?? reports.find((row) => row.call_id === call.id) ?? null
+  );
+}
+
 export function caseFacts(item: Case | null, reports: Report[], call: Call | null): CaseFacts {
   const report = byNewest(reports);
   const first = byOldest(reports);
+  const oldestFirst = [...reports].sort(
+    (a, b) => parseServerTime(a.created_at).getTime() - parseServerTime(b.created_at).getTime(),
+  );
   // Identity is assembled per field, not taken wholesale from one report: a
   // second caller who gave only a description must not blank out the name and
   // number the first caller left.
@@ -72,6 +106,8 @@ export function caseFacts(item: Case | null, reports: Report[], call: Call | nul
   return {
     geo: readGeo(item),
     report,
+    reporters: oldestFirst,
+    reporterCount: Math.max(caseReporterCount(item), oldestFirst.length),
     call,
     // The call carries the caller before a report exists, so a live console and
     // this page agree on who is on the line.
@@ -125,7 +161,7 @@ export function progressSteps(item: Case | null, facts: CaseFacts): ProgressStep
   const locationValue = geo.formatted ?? geo.spoken;
   const hasName = facts.residentName !== null;
   const hasPhone = facts.residentPhone !== null;
-  const filed = (item?.report_count ?? 0) > 0 || facts.report !== null;
+  const filed = facts.reporterCount > 0;
   const callEnded = call !== null && !callLive;
 
   const rules: StepRule[] = [

@@ -16,6 +16,7 @@ import {
   formatPhone,
   issueLabel,
   prettyValue,
+  reportersCount,
 } from "./labels";
 import { callPhase, type Call, type CaseEvent, type Priority, type Sentiment } from "./types";
 
@@ -263,11 +264,14 @@ function updatedEntry(base: { id: number; at: string }, event: CaseEvent): Activ
   }
 }
 
-/** `report_count` is audited as a bare number; say what the number means. */
+/**
+ * `report_count` is audited as a bare number, and a bare number reads as calls.
+ * It counts distinct residents, so the audit line says people.
+ */
 function countSubtitle(value: string | null): string | null {
   const count = Number(value);
   if (!value || Number.isNaN(count)) return null;
-  return `Now ${count} report${count === 1 ? "" : "s"} on this incident`;
+  return `Now ${reportersCount(count)} reporting this incident`;
 }
 
 /** Wall-clock the way the mockup prints it: `10:34 AM`. */

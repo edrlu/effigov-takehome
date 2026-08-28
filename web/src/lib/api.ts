@@ -6,6 +6,7 @@ import type {
   CaseEvent,
   CasePatch,
   CaseStatus,
+  PromotableField,
   Report,
   TokenResponse,
   Turn,
@@ -105,6 +106,22 @@ export const api = {
       if (error instanceof ApiError && error.status === 404) return null;
       throw error;
     }
+  },
+
+  /**
+   * Adopt one report's wording as the case's own.
+   *
+   * The case's canonical fields are frozen at whatever the first caller said,
+   * on purpose. This is the deliberate way a sharper account moves up, and the
+   * backend audits and broadcasts it exactly like a staff edit - so the caller
+   * takes the returned case as the answer and lets the `case.updated` frame
+   * confirm it.
+   */
+  promoteReport(caseId: number, reportId: number, fields: PromotableField[]) {
+    return request<Case>(`/api/cases/${caseId}/promote-report`, {
+      method: "POST",
+      body: JSON.stringify({ report_id: reportId, fields }),
+    });
   },
 
   escalateCase(id: number, reason: string) {

@@ -101,6 +101,30 @@ export function Pill({
   );
 }
 
+/**
+ * Residents on this case gave different answers for one field.
+ *
+ * Carried, never resolved: the backend records the disagreement rather than
+ * picking whichever account arrived first, so the page has to show it. It is a
+ * prompt to read the accounts, so it says where they are.
+ */
+export function Contested({ onViewReports }: { onViewReports?: () => void }) {
+  const label = "Residents disagree";
+  return onViewReports ? (
+    <button type="button" onClick={onViewReports} title="Read what each resident said">
+      <Pill tone="amber">
+        <Icon name="alert" className="h-3.5 w-3.5" />
+        {label}
+      </Pill>
+    </button>
+  ) : (
+    <Pill tone="amber">
+      <Icon name="alert" className="h-3.5 w-3.5" />
+      {label}
+    </Pill>
+  );
+}
+
 export function SkeletonBar({ className = "" }: { className?: string }) {
   return <div className={`animate-pulse rounded bg-inset ${className}`} />;
 }
