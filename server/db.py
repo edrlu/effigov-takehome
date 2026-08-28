@@ -74,6 +74,8 @@ def migrate(bind=None) -> None:
 
         if "report" in existing_tables:
             _one_report_per_reporter(conn)
+        if {"call", "report"} <= existing_tables:
+            _link_calls_to_reports(conn)
 
 
 def _backfill(conn, table: str, column: str) -> None:
@@ -185,6 +187,59 @@ def _one_report_per_reporter(conn) -> None:
             UPDATE "case" SET report_count = (
                 SELECT COUNT(*) FROM report WHERE report.case_id = "case".id
             )
+            """
+        )
+    )
+
+
+def _link_calls_to_reports(conn) -> None:
+    """Point older calls at the report they produced, where that is knowable.
+
+    ``Report.call_id`` has always recorded which call produced a report, so the
+    link exists in the data even in rows written before ``store.file_report``
+    started writing ``Call.report_id`` itself. This reads it back the other way.
+
+    A call no report points at keeps a null ``report_id``, and that is the right
+    answer rather than a gap: a caller who hung up before saying anything, or
+    who only wanted a status update, produced a real call and no report. The
+    serialized call says ``produced_report`` so the two are told apart on
+    purpose instead of by guessing at a null.
+    """
+    conn.execute(
+        text(
+            """
+            UPDATE call SET report_id = (
+                SELECT r.id FROM report r
+                WHERE r.call_id = call.id
+                ORDER BY r.created_at DESC, r.id DESC LIMIT 1
+            )
+            WHERE report_id IS NULL
+              AND EXISTS (SELECT 1 FROM report r WHERE r.call_id = call.id)
+            """
+        )
+    )
+    # A call whose report was folded away by the pass above would be left
+    # pointing at a row that no longer exists. Repoint it at the survivor for
+    # that caller on that case.
+    conn.execute(
+        text(
+            """
+            UPDATE call SET report_id = (
+                SELECT r.id FROM report r
+                WHERE r.case_id = call.case_id LIMIT 1
+            )
+            WHERE report_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM report r WHERE r.id = call.report_id)
+              AND call.case_id IS NOT NULL
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            UPDATE call SET report_id = NULL
+            WHERE report_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM report r WHERE r.id = call.report_id)
             """
         )
     )

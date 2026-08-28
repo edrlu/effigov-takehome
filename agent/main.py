@@ -297,10 +297,9 @@ class IntakeAgent(Agent):
         state.report_id = report["id"]
         state.case_has_detail = bool(case.get("location_detail"))
 
-        if state.call_id is not None:
-            await state.api.update_call(
-                state.call_id, case_id=case["id"], report_id=report["id"]
-            )
+        # The backend links this call to the report it just produced, so there
+        # is no second request here that could fail and leave a completed call
+        # pointing at nothing.
         await state.set_phase(
             "filed", f"Filed {state.case_number}, taking contact details."
         )
@@ -538,6 +537,11 @@ class IntakeAgent(Agent):
         # updates it rather than filing a second one, which is what keeps the
         # case's count of separate residents honest when somebody rings back.
         state.report_id = on_file.get("report_id")
+        # This is a new call against a report that already exists, so the link
+        # is written here - Call -> Report -> Case holds for a caller who rings
+        # back, not only for the call that first opened the report.
+        if state.call_id is not None and state.report_id is not None:
+            await state.api.update_call(state.call_id, report_id=state.report_id)
         return (
             f"Verified as the reporter on {state.case_number}. This is their own report, so "
             f"update_request now updates the account they gave last time rather than filing "
@@ -585,8 +589,6 @@ class IntakeAgent(Agent):
         case, report = result["case"], result["report"]
         state.report_id = report["id"]
         await state.set_caller_name(caller_name)
-        if state.call_id is not None:
-            await state.api.update_call(state.call_id, report_id=report["id"])
 
         logger.info("added reporter %s to case %s", report["id"], state.case_number)
         if result.get("repeat"):

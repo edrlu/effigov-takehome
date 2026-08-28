@@ -142,6 +142,62 @@ def test_folding_leaves_separate_residents_and_anonymous_accounts_alone():
         ).scalar() == 4
 
 
+def _call(conn, *, call_id: int, case_id=None, report_id=None) -> None:
+    conn.execute(
+        text(
+            """
+            INSERT INTO call (id, room, case_id, report_id, status, phase, sentiment,
+                              caller_city, line_type, language, started_at)
+            VALUES (:id, :room, :case_id, :report_id, 'completed', 'ended', 'neutral',
+                    'Berkeley, CA', 'Mobile', 'English', '2026-08-01 09:00:00')
+            """
+        ),
+        {"id": call_id, "room": f"room-{call_id}", "case_id": case_id, "report_id": report_id},
+    )
+
+
+def test_older_calls_are_pointed_at_the_report_they_produced():
+    """``Report.call_id`` has always held the link; this reads it back.
+
+    A call that no report points at keeps a null, because that is the true
+    answer: somebody hung up, or only wanted a status update.
+    """
+    engine = _legacy_engine()
+    with engine.begin() as conn:
+        _case(conn, case_id=1, report_count=1)
+        _call(conn, call_id=11, case_id=1)
+        _call(conn, call_id=12, case_id=1)  # produced nothing
+        _report(conn, id=1, case_id=1, call_id=11, name="Edward Lu", phone="5105551212",
+                description="One.", created_at="2026-08-01 09:00:00")
+
+    migrate(engine)
+
+    with engine.begin() as conn:
+        rows = dict(conn.execute(text("SELECT id, report_id FROM call")).fetchall())
+        assert rows[11] == 1
+        assert rows[12] is None
+
+
+def test_a_call_pointing_at_a_folded_report_is_repointed_not_orphaned():
+    engine = _legacy_engine()
+    with engine.begin() as conn:
+        _case(conn, case_id=1, report_count=2)
+        _call(conn, call_id=11, case_id=1, report_id=1)
+        _call(conn, call_id=12, case_id=1, report_id=2)
+        _report(conn, id=1, case_id=1, call_id=11, name="Edward Lu", phone="5105551212",
+                description="One.", created_at="2026-08-01 09:00:00")
+        _report(conn, id=2, case_id=1, call_id=12, name=None, phone="5105551212",
+                description="Two.", created_at="2026-08-02 09:00:00")
+
+    migrate(engine)
+
+    with engine.begin() as conn:
+        survivors = {r[0] for r in conn.execute(text("SELECT id FROM report")).fetchall()}
+        assert len(survivors) == 1
+        pointed = {r[1] for r in conn.execute(text("SELECT id, report_id FROM call")).fetchall()}
+        assert pointed <= survivors, "a call is pointing at a report that no longer exists"
+
+
 def test_migrating_twice_is_a_no_op():
     engine = _legacy_engine()
     with engine.begin() as conn:
