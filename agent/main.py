@@ -812,19 +812,20 @@ async def entrypoint(ctx: JobContext) -> None:
             # a crash between these two calls cannot leave a call looking live.
             await api.update_call(state.call_id, status="completed", summary=summary)
             if state.case_id is not None:
-                # The call's summary is about this call. The case's has to be
-                # about the incident: staff work the case and must not have to
-                # read five reports to understand one pothole, so once several
-                # residents are on it the summary is written over all of their
-                # accounts rather than over whoever rang last.
-                case_summary = await _case_summary(api, state.case_id, summary)
+                # This call's summary stands as the case's until another
+                # resident reports the same incident. From the second report on,
+                # ``server.summarize`` rewrites it across every account, off the
+                # request path - staff work the case and must not have to read
+                # five reports to understand one pothole, and the case must not
+                # read as whoever rang most recently.
+                #
                 # The summary always lands. The status only does when the agent
                 # never ruled on this case: parking a fresh intake with the
                 # department is right, overwriting a deliberate ``resolved`` or
                 # ``needs_info`` at hangup is not.
                 await api.update_case(
                     state.case_id,
-                    summary=case_summary,
+                    summary=summary,
                     status=None if state.status_set else "in_progress",
                 )
         except Exception:
@@ -860,40 +861,6 @@ async def _summarize(session: AgentSession) -> str:
         "the case. Three sentences at most: what was reported, where, and "
         "anything still missing. No preamble.",
         "\n".join(lines),
-    )
-
-
-async def _case_summary(api: CaseAPI, case_id: int, call_summary: str) -> str:
-    """A case-level summary that survives corroboration.
-
-    A case with one report is that call, so this is a no-op for it. A case
-    several residents have reported is not: writing this call's summary over
-    the case would make it read as whoever happened to ring most recently, and
-    a supervisor opening it would have to go digging through the reports to
-    find out that four other people said the same thing. So the accounts are
-    summarised together, and the last caller stops being the whole story.
-    """
-    try:
-        reports = await api.case_reports(case_id)
-    except Exception:
-        logger.exception("could not read reports for case %s", case_id)
-        return call_summary
-
-    accounts = [
-        f"Report {index}: {r.get('description') or 'no description given'}"
-        + (f" (location as given: {r['location']})" if r.get("location") else "")
-        for index, r in enumerate(reports, start=1)
-    ]
-    if len(accounts) < 2:
-        return call_summary
-
-    return await _ask(
-        "Summarize a 311 case for the city staffer who will work it. Several "
-        "residents have reported the same incident: say what the problem is, "
-        "where, what the accounts agree on, and anything only one of them "
-        "mentions. Three sentences at most, no preamble, and do not name the "
-        "callers.",
-        "\n".join([f"Latest call: {call_summary}", *accounts]),
     )
 
 
