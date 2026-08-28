@@ -98,8 +98,7 @@ cd web && npm install && cd ..
 ## Running
 
 ```bash
-./scripts/dev.sh                       # livekit-server + api + agent worker + dashboard
-uv run python scripts/seed.py          # a few cases so the list is not empty
+./run.sh --seed    # livekit-server, api, voice agent, and dashboard, with example cases
 ```
 
 Staff dashboard at <http://localhost:3000>, resident call page at <http://localhost:3000/call>.

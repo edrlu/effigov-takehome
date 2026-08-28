@@ -3,14 +3,14 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AuditTimeline } from "@/components/AuditTimeline";
-import { DepartmentTag, EscalationBanner, IssueTag, ScorePill, StatusBadge } from "@/components/Badge";
+import { DepartmentTag, EscalationBanner, IssueTag, StatusBadge } from "@/components/Badge";
 import { EnumSelect } from "@/components/EnumSelect";
 import { NotesPanel } from "@/components/NotesPanel";
 import { ReportsPanel } from "@/components/ReportsPanel";
 import { Transcript } from "@/components/Transcript";
 import { ErrorNote, FieldRow, Panel, Skeleton } from "@/components/ui";
 import { api } from "@/lib/api";
-import { PRIORITY_LABEL, STATUS_LABEL, departmentLabel, issueLabel } from "@/lib/labels";
+import { PRIORITY_LABEL, PRIORITY_TEXT, STATUS_LABEL, departmentLabel, issueLabel } from "@/lib/labels";
 import {
   CASE_STATUSES,
   PRIORITIES,
@@ -291,8 +291,12 @@ export function CaseDetail({ caseId }: { caseId: number }) {
           </span>
         </Stat>
         <Stat label="Priority score" flashing={flashed.has("priority_score")}>
-          <span className="tabular-nums">{item.priority_score ?? 0}</span>
-          <ScorePill score={item.priority_score} />
+          <span className={`tabular-nums ${PRIORITY_TEXT[item.priority]}`}>
+            {item.priority_score ?? 0}
+          </span>
+          <span className="text-[12px] font-normal text-faint">
+            {PRIORITY_LABEL[item.priority].toLowerCase()}
+          </span>
         </Stat>
         <Stat label="Department" flashing={flashed.has("department")}>
           <span className="truncate text-[14px]">{departmentLabel(item.department)}</span>

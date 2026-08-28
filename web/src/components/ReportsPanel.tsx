@@ -8,6 +8,7 @@ import { formatDateTime, parseServerTime, relativeTime } from "@/lib/time";
 import { useFlash } from "@/lib/useFlash";
 import { useLiveEvents } from "@/lib/useLiveEvents";
 import { useNow } from "@/lib/useNow";
+import { formatPhone } from "@/lib/labels";
 
 function newestFirst(a: Report, b: Report): number {
   return parseServerTime(b.created_at).getTime() - parseServerTime(a.created_at).getTime();
@@ -112,10 +113,10 @@ export function ReportsPanel({ caseItem }: { caseItem: Case }) {
 
               {report.reporter_phone ? (
                 <a
-                  href={`tel:${report.reporter_phone}`}
+                  href={`tel:${formatPhone(report.reporter_phone)}`}
                   className="mt-0.5 inline-block font-mono text-[12px] text-muted hover:text-accent"
                 >
-                  {report.reporter_phone}
+                  {formatPhone(report.reporter_phone)}
                 </a>
               ) : (
                 <p className="mt-0.5 font-mono text-[12px] text-faint">No callback number</p>
