@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="EffiGov Case API", lifespan=lifespan)
+app = FastAPI(title="Emma311 Case API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

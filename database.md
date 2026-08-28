@@ -1,4 +1,4 @@
-# EffiGov 311: database
+# Emma311: database
 
 One SQLite file, six tables, defined in `server/models.py` and created by `server/db.py`.
 

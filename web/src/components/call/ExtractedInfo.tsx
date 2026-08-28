@@ -84,7 +84,9 @@ export function ExtractedInfo({
   ];
 
   return (
-    <ConsoleCard className="px-5 py-[18px]">
+    // Every row is a fixed height and the panel has no variable content, so it
+    // is the same rectangle empty as it is fully captured.
+    <ConsoleCard className="shrink-0 px-5 py-[18px]">
       <CardHeading
         title="Extracted Information"
         action={

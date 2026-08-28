@@ -41,6 +41,17 @@ Setting `scrollTop` fires a `scroll` event a frame later, by which time more row
 Judging "has the reader scrolled up?" from that stale event unpins the panel permanently after the first burst, and it silently stops following.
 `web/src/lib/useTailFollow.ts` remembers the offset it scrolled to and treats an event still sitting there as its own; use it rather than hand-rolling the effect again.
 
+**There is one bar, and a page fills its title slot rather than drawing its own.**
+`web/src/components/TopNav.tsx` is the product's only header row: brand, nav, the current page's title, its one action, and the live indicator.
+A page pushes its title and action in with `<PageBar title=... action={{href, label}} />` (`web/src/components/PageBar.tsx`); it must not add a header row of its own.
+The action is plain data, not a node, because a JSX node is a new object every render and would make `PageBar`'s effect fire forever.
+
+**The call console is one fixed-height row, and every panel in it holds its rectangle.**
+`CONSOLE_H` in `web/src/app/call/page.tsx` is the natural height of the merged call panel, which is the tallest column; the other two stretch to it.
+Nothing on that page may grow as data arrives, so each block inside `CallPanel` is `shrink-0` with a fixed height and each list scrolls internally.
+Without `shrink-0` the flex column silently squeezes every block instead of overflowing - the symptom is text clipped mid-glyph, not a scrollbar.
+Changing the panel's content means re-measuring it in a browser and updating `CONSOLE_H`.
+
 **A frame handler cannot read a ref that only updates on render.**
 `call.started` and the `event.appended` announcing it are dispatched in the same task, so a handler that decides ownership from a ref assigned during render sees the previous value and drops the event.
 `web/src/lib/useCallConsole.ts` assigns those refs inside the handler that adopts the call, not in the render body.

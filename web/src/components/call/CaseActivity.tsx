@@ -32,16 +32,18 @@ export function CaseActivity({ events, kase }: { events: CaseEvent[]; kase: Case
   const tail = useTailFollow(entries.length);
 
   return (
-    <ConsoleCard className="flex min-h-0 flex-col px-5 py-[18px]">
+    // A fixed rectangle, empty or full: the timeline scrolls inside its own
+    // frame rather than growing the column as events arrive.
+    <ConsoleCard className="flex h-[460px] min-h-0 flex-col px-5 py-[18px] xl:h-full">
       <CardHeading title="Case Activity" />
 
       <div
         ref={tail.ref}
         onScroll={tail.onScroll}
-        className="scroll-slim mt-4 -mr-2 max-h-[300px] flex-1 overflow-y-auto pr-2"
+        className="scroll-slim mt-4 -mr-2 min-h-0 flex-1 overflow-y-auto pr-2"
       >
         {entries.length === 0 ? (
-          <p className="py-10 text-center text-[13px] text-slate-400">
+          <p className="flex h-full items-center justify-center px-6 text-center text-[13px] text-slate-400">
             Every routing decision and field change lands here as it happens.
           </p>
         ) : (

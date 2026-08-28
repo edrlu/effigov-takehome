@@ -1,4 +1,4 @@
-# EffiGov 311: voice intake for Berkeley
+# Emma311: voice intake for Berkeley
 
 A resident calls **Emma**, the automated intake line for **Berkeley 311**.
 Emma works out what the problem is and where it is, then opens a case or recognises the city already has one.
