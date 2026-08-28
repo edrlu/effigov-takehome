@@ -113,14 +113,6 @@ export function CheckCircleIcon(props: IconProps) {
   );
 }
 
-export function ChevronIcon(props: IconProps) {
-  return (
-    <Outline strokeWidth={1.8} {...props}>
-      <path d="m6 9.5 6 6 6-6" />
-    </Outline>
-  );
-}
-
 export function MicIcon(props: IconProps) {
   return (
     <Outline {...props}>
@@ -161,14 +153,6 @@ export function EndCallIcon(props: IconProps) {
     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden {...props}>
       <path d="M12 6.5c-3.1 0-6 .8-8.4 2.2a2.2 2.2 0 0 0-1 2.4l.4 1.7a1.8 1.8 0 0 0 2.2 1.3l2.5-.6a1.8 1.8 0 0 0 1.4-1.9l-.1-1.2c2-.5 4-.5 6 0l-.1 1.2a1.8 1.8 0 0 0 1.4 1.9l2.5.6a1.8 1.8 0 0 0 2.2-1.3l.4-1.7a2.2 2.2 0 0 0-1-2.4A16.6 16.6 0 0 0 12 6.5Z" />
     </svg>
-  );
-}
-
-export function FilterIcon(props: IconProps) {
-  return (
-    <Outline {...props}>
-      <path d="M4 6.2h16M7 12h10M10 17.8h4" />
-    </Outline>
   );
 }
 

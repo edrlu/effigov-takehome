@@ -12,7 +12,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CardHeading, ConsoleCard } from "@/components/call/surface";
-import { ChevronIcon, FilterIcon } from "@/components/call/icons";
 import { api } from "@/lib/api";
 import { clock12 } from "@/lib/callConsole";
 import { parseServerTime } from "@/lib/time";
@@ -108,18 +107,7 @@ export function LiveTranscript({ call }: { call: Call | null }) {
     // A fixed rectangle, empty or full. The tail-follow behaviour is unchanged:
     // it pins to the newest line unless the reader has scrolled up.
     <ConsoleCard className="flex h-[420px] min-h-0 flex-col px-5 py-[18px] xl:h-auto xl:flex-1">
-      <CardHeading
-        title="Live Transcript"
-        action={
-          <>
-            <FilterIcon className="h-4 w-4 text-slate-400" />
-            <span className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1 text-[12px] text-slate-600">
-              AI summary
-              <ChevronIcon className="h-3.5 w-3.5 text-slate-400" />
-            </span>
-          </>
-        }
-      />
+      <CardHeading title="Live Transcript" />
 
       <div
         ref={tail.ref}
