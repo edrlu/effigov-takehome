@@ -14,6 +14,11 @@ For the same reason `_log` snapshots each `Event` with `serialize` at write time
 **Frames a websocket test asserts on must be fenced, not slept on.**
 `{"type":"ping"}` is queued through the same per-client writer as data frames, so a `pong` can only arrive after everything published before it. `tests/test_live.py::read_until_quiet` uses that; a bare `receive_json()` with nothing pending blocks forever and hangs the suite.
 
+**When a case was resolved is only in the audit log.**
+`Case.updated_at` moves for any edit, so it cannot date a fix.
+The transition is recorded as an `Event` with `kind="case.updated"`, `field="status"`, `new_value="resolved"`, and `server/analytics.py` reads exactly that shape.
+Anything that writes a resolution outside `store.update_case` - `scripts/seed.py` does - has to write that event too, or the case silently drops out of the resolution-time average.
+
 ## Commands
 
 - `uv run pytest` - the whole suite.
