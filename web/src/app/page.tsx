@@ -1,86 +1,118 @@
 "use client";
 
+/**
+ * The staff dashboard.
+ *
+ * Four headline tiles, the case table, and three analytics panels. Every
+ * number on this page is read from the API - `/api/cases` for the table and
+ * `/api/stats/*` for the tiles and charts - and every panel that cannot read
+ * its data says so rather than showing a placeholder.
+ *
+ * The page shares the one websocket the rest of the app uses: case traffic
+ * updates the table in place with the usual field highlight, and schedules a
+ * debounced re-read of the analytics so the tiles do not go stale.
+ */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActiveCallsBar } from "@/components/ActiveCallsBar";
-import { CaseTable, CaseTableSkeleton } from "@/components/CaseTable";
-import { PendingUpdates } from "@/components/PendingUpdates";
-import { EmptyState, ErrorNote } from "@/components/ui";
+import { StatTiles } from "@/components/dashboard/StatTiles";
+import { RecentCases } from "@/components/dashboard/RecentCases";
+import { CallVolumePanel } from "@/components/dashboard/CallVolumePanel";
+import { CasesByTypePanel } from "@/components/dashboard/CasesByTypePanel";
+import { NeedsAttentionPanel } from "@/components/dashboard/NeedsAttentionPanel";
 import { api } from "@/lib/api";
-import { DEPARTMENT_LABEL, ISSUE_LABEL, STATUS_LABEL } from "@/lib/labels";
-import { CASE_STATUSES, caseLocation, type Case, type CaseStatus } from "@/lib/types";
-import { useEngagement, useHeldOrder } from "@/lib/useHeldOrder";
+import { statsApi, type AttentionGroup, type CallVolume, type CasesByType, type Summary } from "@/lib/stats";
+import type { Case } from "@/lib/types";
 import { useFlash } from "@/lib/useFlash";
 import { useLiveEvents } from "@/lib/useLiveEvents";
 import { useNow } from "@/lib/useNow";
-import { parseServerTime } from "@/lib/time";
 
-type Filter = CaseStatus | "all";
-type SortKey = "recent" | "priority";
+/** Case traffic arrives in bursts; re-read the analytics once the burst ends. */
+const STATS_DEBOUNCE_MS = 1_200;
 
-const FILTERS: Filter[] = ["all", ...CASE_STATUSES];
+type Loaded<T> = { data: T | null; error: string | null };
 
-const SORTS: { key: SortKey; label: string }[] = [
-  { key: "recent", label: "Recent" },
-  { key: "priority", label: "Priority score" },
-];
+const pending = <T,>(): Loaded<T> => ({ data: null, error: null });
 
-function updatedAt(item: Case): number {
-  return parseServerTime(item.updated_at).getTime();
+function settle<T>(result: PromiseSettledResult<T>): Loaded<T> {
+  if (result.status === "fulfilled") return { data: result.value, error: null };
+  const reason = result.reason;
+  return { data: null, error: reason instanceof Error ? reason.message : "Request failed" };
 }
 
-function comparator(sort: SortKey) {
-  return (a: Case, b: Case) => {
-    if (sort === "priority") {
-      const delta = (b.priority_score ?? 0) - (a.priority_score ?? 0);
-      if (delta !== 0) return delta;
-    }
-    return updatedAt(b) - updatedAt(a);
-  };
-}
-
-function matches(item: Case, needle: string): boolean {
-  if (!needle) return true;
-  const haystack = [
-    item.case_number,
-    caseLocation(item),
-    item.description,
-    item.summary,
-    item.escalation_reason,
-    item.issue_type ? ISSUE_LABEL[item.issue_type] : null,
-    item.department ? DEPARTMENT_LABEL[item.department] : null,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return haystack.includes(needle);
-}
-
-const caseId = (item: Case) => item.id;
-
-export default function CasesPage() {
+export default function DashboardPage() {
   const [cases, setCases] = useState<Case[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<Filter>("all");
-  const [sort, setSort] = useState<SortKey>("recent");
-  /** Field-level highlights, keyed `<case id>:<field>`. */
+  const [casesError, setCasesError] = useState<string | null>(null);
+
+  const [days, setDays] = useState(7);
+  const [summary, setSummary] = useState<Loaded<Summary>>(pending);
+  const [volume, setVolume] = useState<Loaded<CallVolume>>(pending);
+  const [byType, setByType] = useState<Loaded<CasesByType>>(pending);
+  const [attention, setAttention] = useState<Loaded<AttentionGroup[]>>(pending);
+  const [statsLoading, setStatsLoading] = useState(true);
+
+  /** Bumped when a report lands, so cached resident names are re-read. */
+  const [reportsToken, setReportsToken] = useState(0);
+
   const { flash: flashField, flashed: flashedFields } = useFlash<string>();
   const now = useNow(10_000);
 
-  const load = useCallback(() => {
-    setError(null);
+  const loadCases = useCallback(() => {
     return api
       .listCases()
-      .then((rows) => setCases(rows))
+      .then((rows) => {
+        setCases(rows);
+        setCasesError(null);
+      })
       .catch((cause: Error) => {
         setCases([]);
-        setError(cause.message);
+        setCasesError(cause.message);
       });
   }, []);
 
+  // The four analytics reads are independent: one endpoint being unavailable
+  // must not blank the panels that answered.
+  const loadStats = useCallback(async (window: number) => {
+    const [summaryResult, volumeResult, typeResult, attentionResult] = await Promise.allSettled([
+      statsApi.summary(),
+      statsApi.callVolume(window),
+      statsApi.casesByType(),
+      statsApi.needsAttention(),
+    ]);
+    setSummary(settle(summaryResult));
+    setVolume(settle(volumeResult));
+    setByType(settle(typeResult));
+    setAttention(settle(attentionResult));
+    setStatsLoading(false);
+  }, []);
+
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadCases();
+  }, [loadCases]);
+
+  useEffect(() => {
+    void loadStats(days);
+  }, [loadStats, days]);
+
+  const daysRef = useRef(days);
+  useEffect(() => {
+    daysRef.current = days;
+  }, [days]);
+
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleStatsRefresh = useCallback(() => {
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => {
+      refreshTimer.current = null;
+      void loadStats(daysRef.current);
+    }, STATS_DEBOUNCE_MS);
+  }, [loadStats]);
+
+  useEffect(
+    () => () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    },
+    [],
+  );
 
   const upsert = useCallback((incoming: Case) => {
     setCases((previous) => {
@@ -100,173 +132,86 @@ export default function CasesPage() {
     [flashField],
   );
 
+  const resync = useCallback(() => {
+    return Promise.all([loadCases(), loadStats(daysRef.current)]);
+  }, [loadCases, loadStats]);
+
   useLiveEvents(
     {
       "case.created": (payload) => {
         upsert(payload);
         highlight(payload, ["created"]);
+        scheduleStatsRefresh();
       },
       "case.updated": (payload) => {
         upsert(payload.case);
         highlight(payload.case, payload.changed);
+        scheduleStatsRefresh();
       },
       "case.escalated": (payload) => {
         upsert(payload);
-        highlight(payload, ["escalated", "priority_score"]);
+        highlight(payload, ["escalated", "priority"]);
+        scheduleStatsRefresh();
       },
       "report.filed": (payload) => {
         upsert(payload.case);
-        // A merged report is the interesting one: an existing incident just
-        // gained corroboration, so call out the count itself.
-        highlight(payload.case, payload.merged ? ["report_count", "priority_score"] : ["created"]);
+        highlight(payload.case, payload.merged ? ["report_count"] : ["created"]);
+        setReportsToken((token) => token + 1);
+        scheduleStatsRefresh();
       },
+      "report.updated": () => {
+        setReportsToken((token) => token + 1);
+      },
+      // A call starting or ending moves the Live Calls tile and the volume
+      // chart even when no case changed.
+      "call.started": () => scheduleStatsRefresh(),
+      "call.updated": () => scheduleStatsRefresh(),
     },
-    load,
+    resync,
   );
-
-  const counts = useMemo(() => {
-    const tally: Record<Filter, number> = { all: 0, new: 0, in_progress: 0, needs_info: 0, resolved: 0 };
-    for (const item of cases ?? []) {
-      tally.all += 1;
-      tally[item.status] += 1;
-    }
-    return tally;
-  }, [cases]);
-
-  const desired = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return (cases ?? [])
-      .filter((item) => (filter === "all" || item.status === filter) && matches(item, needle))
-      .sort(comparator(sort));
-  }, [cases, filter, query, sort]);
-
-  const { engaged, handlers } = useEngagement();
-  const held = useHeldOrder(desired, caseId, {
-    hold: engaged,
-    resetKey: `${filter}|${sort}|${query.trim().toLowerCase()}`,
-  });
 
   const fieldFlash = useCallback(
     (id: number, field: string) => flashedFields.has(`${id}:${field}`),
     [flashedFields],
   );
 
-  const loading = cases === null;
-  const filtered = query.trim().length > 0 || filter !== "all";
-  const escalatedCount = (cases ?? []).filter((item) => item.escalated).length;
-
-  // Announce arrivals without narrating every field change on every row.
-  const previousTotal = useRef(0);
-  const arrivals = desired.length - previousTotal.current;
-  useEffect(() => {
-    previousTotal.current = desired.length;
-  }, [desired.length]);
+  const rows = useMemo(() => cases ?? [], [cases]);
 
   return (
-    <div className="flex flex-col gap-5">
-      <ActiveCallsBar />
+    // The rest of the product is dark; this page is the light surface, so it
+    // breaks out of the shell's width and paints its own background.
+    <div className="relative left-1/2 -my-6 min-h-[calc(100vh-3.5rem)] w-screen -translate-x-1/2 bg-[#f6f7f9] px-4 py-7 sm:px-6">
+      <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-4">
+        <header className="flex flex-wrap items-end justify-between gap-3 pb-1">
+          <div>
+            <h1 className="text-[22px] leading-7 font-semibold tracking-tight text-slate-900">Case Dashboard</h1>
+            <p className="mt-1 text-[13px] text-slate-500">
+              Live 311 intake across every department, updated as calls come in.
+            </p>
+          </div>
+        </header>
 
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-[20px] leading-7 font-semibold tracking-tight">Cases</h1>
-          <p className="mt-0.5 text-[13px] text-muted">
-            One case per incident, however many residents call it in.
-          </p>
-        </div>
-        <div className="flex items-center gap-3 pb-1 text-[12px] tabular-nums text-faint">
-          {escalatedCount > 0 ? <span className="text-red-300">{escalatedCount} escalated</span> : null}
-          <span>{loading ? "Loading" : `${held.rows.length} of ${counts.all} shown`}</span>
-        </div>
-      </div>
+        <StatTiles summary={summary.data} loading={statsLoading} />
 
-      <p role="status" aria-live="polite" className="sr-only">
-        {loading ? "Loading cases" : arrivals > 0 ? `${arrivals} new case${arrivals === 1 ? "" : "s"}` : ""}
-      </p>
+        <RecentCases
+          cases={rows}
+          loading={cases === null}
+          error={casesError}
+          fieldFlash={fieldFlash}
+          reportsToken={reportsToken}
+          now={now}
+        />
 
-      {error ? <ErrorNote message={error} onRetry={() => void load()} /> : null}
-
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-0 flex-1 sm:max-w-xs">
-          <svg
-            viewBox="0 0 16 16"
-            aria-hidden
-            className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-faint"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-          >
-            <circle cx="7" cy="7" r="4.5" />
-            <path d="M10.5 10.5 14 14" strokeLinecap="round" />
-          </svg>
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search case, location, issue, department"
-            aria-label="Search cases"
-            className="h-8 w-full rounded-md border border-line bg-panel pr-2.5 pl-8 text-[13px] text-ink placeholder:text-faint focus:border-accent/60 focus:outline-none"
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <CallVolumePanel
+            volume={volume.data}
+            days={days}
+            onDaysChange={setDays}
+            loading={statsLoading}
+            error={volume.error}
           />
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1.5">
-          {FILTERS.map((value) => {
-            const active = filter === value;
-            return (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setFilter(value)}
-                className={`h-8 rounded-md border px-2.5 text-[12px] whitespace-nowrap transition-colors ${
-                  active
-                    ? "border-line-strong bg-raised text-ink"
-                    : "border-line text-muted hover:border-line-strong hover:text-ink"
-                }`}
-              >
-                {value === "all" ? "All" : STATUS_LABEL[value]}
-                <span className="ml-1.5 tabular-nums text-faint">
-                  {counts[value]}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="ml-auto flex h-8 items-center gap-0.5 rounded-md border border-line bg-panel p-0.5">
-          {SORTS.map((option) => (
-            <button
-              key={option.key}
-              type="button"
-              onClick={() => setSort(option.key)}
-              className={`h-7 rounded px-2 text-[12px] whitespace-nowrap transition-colors ${
-                sort === option.key ? "bg-raised text-ink" : "text-muted hover:text-ink"
-              }`}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* The pill floats in the gap above the table rather than inside it, so
-          surfacing a held change neither shifts the rows nor covers a column
-          header. The clipping that rounds the table lives on the inner box. */}
-      <div className="relative" {...handlers}>
-        <PendingUpdates added={held.added} removed={held.removed} reordered={held.reordered} onApply={held.apply} />
-
-        <div className="overflow-hidden rounded-lg border border-line bg-panel">
-          {loading ? (
-            <CaseTableSkeleton />
-          ) : held.rows.length === 0 ? (
-            <EmptyState
-              title={filtered ? "No cases match these filters" : "No cases yet"}
-              hint={
-                filtered
-                  ? "Clear the search box or pick a different status to widen the queue."
-                  : "Cases appear here the moment a resident reports one. Start a call to file the first."
-              }
-            />
-          ) : (
-            <CaseTable cases={held.rows} fieldFlash={fieldFlash} now={now} />
-          )}
+          <CasesByTypePanel breakdown={byType.data} loading={statsLoading} error={byType.error} />
+          <NeedsAttentionPanel groups={attention.data} loading={statsLoading} error={attention.error} />
         </div>
       </div>
     </div>
