@@ -363,6 +363,24 @@ def backfill_history() -> None:
         for case in cases:
             session.refresh(case)
 
+        # Every case above was born with report_count=1 - the resident who
+        # called it in - so that resident has to exist. Without this row the
+        # dashboard reads a count of 1 and finds nobody behind it: the Resident
+        # column is blank and the case page contradicts its own header stat.
+        # Indexed rather than drawn from RNG so the rest of the seed is
+        # unchanged.
+        for index, case in enumerate(cases):
+            name, phone = CALLERS[index % len(CALLERS)]
+            session.add(
+                Report(
+                    case_id=case.id,
+                    reporter_name=name,
+                    reporter_phone=phone,
+                    description=case.description,
+                    created_at=case.created_at,
+                )
+            )
+
         # The last four entries of BACKLOG are the ones the "needs attention"
         # cards exist for. They are held out of the lifecycle below so they
         # stay open: a case that is already resolved needs nobody's attention.
