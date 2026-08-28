@@ -72,6 +72,14 @@ export interface Case {
   report_count: number;
   escalated: boolean;
   escalation_reason: string | null;
+  /**
+   * Field names the residents on this case do not agree about - "location",
+   * "issue_type". Recomputed from their reports every time one lands, and
+   * carried rather than resolved: two people putting the pothole three blocks
+   * apart is a fact a dispatcher needs, not a tie to break by arrival order.
+   * The `changed` list names it `contested_fields`; the payload key is this.
+   */
+  contested?: string[];
   summary: string | null;
   notes?: string | null;
   created_at: string;
@@ -98,6 +106,13 @@ export interface Report {
   reporter_name: string | null;
   reporter_phone: string | null;
   description: string | null;
+  /**
+   * What this caller said the problem was, stored as given - before the
+   * confidence gate that decides how the *case* is classified. One resident
+   * saying water leak where the case says pothole is worth a dispatcher's
+   * attention, so it is kept rather than discarded by the gate.
+   */
+  issue_type?: IssueType | null;
   /**
    * This resident's own words for where the problem is, kept beside the case's
    * canonical `location` so a later, vaguer caller cannot overwrite a sharper
@@ -234,6 +249,11 @@ export function reporterCount(item: Pick<Case, "report_count">): number {
  */
 export function isSealed(call: Pick<Call, "status">): boolean {
   return call.status === "completed";
+}
+
+/** Do the residents on this case disagree about this field? */
+export function isContested(item: Pick<Case, "contested">, field: string): boolean {
+  return Array.isArray(item.contested) && item.contested.includes(field);
 }
 
 export function caseLocation(item: Case): string | null {

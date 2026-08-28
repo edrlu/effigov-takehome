@@ -11,10 +11,10 @@
 
 import { issueLabel, formatPhone, PRIORITY_LABEL, reportersPhrase, STATUS_LABEL } from "@/lib/labels";
 import { formatDateTime } from "@/lib/time";
-import type { Case, Report } from "@/lib/types";
+import { isContested, type Case, type Report } from "@/lib/types";
 import type { CaseGeo } from "@/lib/geo";
 import { Icon } from "./icons";
-import { Absent, Card, Field, Pill, PRIORITY_TONE, STATUS_TONE } from "./ui";
+import { Absent, Card, Contested, Field, Pill, PRIORITY_TONE, STATUS_TONE } from "./ui";
 import type { CaseFacts } from "./derive";
 
 export function CaseSummaryCard({
@@ -22,6 +22,7 @@ export function CaseSummaryCard({
   duration,
   reporterCount,
   changed,
+  onViewReports,
 }: {
   item: Case;
   /** mm:ss for the linked call, or null when no call is attached. */
@@ -29,6 +30,7 @@ export function CaseSummaryCard({
   /** Distinct residents, not calls. See `reportersPhrase`. */
   reporterCount: number;
   changed: ReadonlySet<string>;
+  onViewReports: () => void;
 }) {
   return (
     <Card title="Case Summary">
@@ -37,8 +39,15 @@ export function CaseSummaryCard({
       </p>
 
       <div className="mt-4 grid gap-x-8 gap-y-4 border-t border-hairline-soft pt-4 sm:grid-cols-2">
-        <Field icon="tag" label="Issue Type" flashing={changed.has("issue_type")}>
-          {item.issue_type ? issueLabel(item.issue_type) : <Absent>Being classified</Absent>}
+        <Field
+          icon="tag"
+          label="Issue Type"
+          flashing={changed.has("issue_type") || changed.has("contested_fields")}
+        >
+          <span className="flex flex-wrap items-center gap-2">
+            {item.issue_type ? issueLabel(item.issue_type) : <Absent>Being classified</Absent>}
+            {isContested(item, "issue_type") ? <Contested onViewReports={onViewReports} /> : null}
+          </span>
         </Field>
         <Field icon="users" label="Reported by" flashing={changed.has("report_count")}>
           {reporterCount > 0 ? (
@@ -71,22 +80,32 @@ export function CaseSummaryCard({
 }
 
 export function CollectedDetails({
+  item,
   geo,
   description,
   changed,
+  onViewReports,
 }: {
+  item: Case;
   geo: CaseGeo;
   description: string | null;
   changed: ReadonlySet<string>;
+  onViewReports: () => void;
 }) {
   const locationChanged =
-    changed.has("location") || changed.has("location_formatted") || changed.has("location_text");
+    changed.has("location") ||
+    changed.has("location_formatted") ||
+    changed.has("location_text") ||
+    changed.has("contested_fields");
 
   return (
     <Card title="AI Collected Details">
       <div className="flex flex-col gap-4">
         <Field icon="pin" label="Location" flashing={locationChanged}>
-          {geo.formatted ?? <Absent>No location captured yet</Absent>}
+          <span className="flex flex-wrap items-center gap-2">
+            {geo.formatted ?? <Absent>No location captured yet</Absent>}
+            {isContested(item, "location") ? <Contested onViewReports={onViewReports} /> : null}
+          </span>
         </Field>
         <Field icon="note" label="Description" flashing={changed.has("description")}>
           {description ?? <Absent>No description captured yet</Absent>}

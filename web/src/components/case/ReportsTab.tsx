@@ -22,17 +22,26 @@
 
 import { useState } from "react";
 import { api } from "@/lib/api";
-import { formatPhone, reportersPhrase } from "@/lib/labels";
+import { formatPhone, issueLabel, reportersPhrase } from "@/lib/labels";
 import { formatDateTime } from "@/lib/time";
-import type { Case, PromotableField, Report } from "@/lib/types";
+import { isContested, type Case, type PromotableField, type Report } from "@/lib/types";
 import { Icon } from "./icons";
-import { Absent, Card, ErrorCard, Pill, SkeletonBar } from "./ui";
+import { Absent, Card, Contested, ErrorCard, Pill, SkeletonBar } from "./ui";
 
 /** The two fields a report can lend the case, worded for the button. */
 const PROMOTABLE: { field: PromotableField; label: string; noun: string }[] = [
   { field: "description", label: "Their account", noun: "description" },
   { field: "location", label: "Their location", noun: "location" },
 ];
+
+const CONTESTED_LABEL: Record<string, string> = {
+  location: "location",
+  issue_type: "kind of problem",
+};
+
+function contestedLabels(item: Case): string[] {
+  return (item.contested ?? []).map((field) => CONTESTED_LABEL[field] ?? field.replace(/_/g, " "));
+}
 
 function text(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
@@ -79,6 +88,19 @@ export function ReportsTab({
           Each account below is one resident&rsquo;s own words. The case above is what staff work.
         </p>
       </div>
+
+      {/* The backend carries a disagreement rather than resolving it by
+          arrival order, so the accounts that disagree are exactly what this
+          page is for. Say which field, and let the cards do the rest. */}
+      {contestedLabels(item).length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2.5 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-3.5">
+          <Icon name="alert" className="h-4 w-4 shrink-0 text-amber-500" />
+          <p className="text-[13px] leading-5 text-amber-800">
+            These residents do not agree about the {contestedLabels(item).join(" or the ")}. Read the accounts
+            below and promote the one a crew should be sent on.
+          </p>
+        </div>
+      ) : null}
 
       {reports === null ? (
         <div className="flex flex-col gap-4">
@@ -186,6 +208,19 @@ function ReportCard({
       </div>
 
       <div className="mt-3.5 flex flex-col gap-3.5">
+        {/* What this caller said the problem was, before the confidence gate
+            that decides what the case is classified as. Read-only: the case's
+            classification is the city's call, not one resident's. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          <div>
+            <p className="text-[12px] leading-[18px] text-slate-500">Their read on the problem</p>
+            <p className="mt-1 text-[13.5px] leading-5 text-slate-900">
+              {report.issue_type ? issueLabel(report.issue_type) : <Absent>Not stated</Absent>}
+            </p>
+          </div>
+          {report.issue_type && isContested(item, "issue_type") ? <Contested /> : null}
+        </div>
+
         {PROMOTABLE.map(({ field, label, noun }) => (
           <PromotableRow
             key={field}
@@ -195,6 +230,7 @@ function ReportCard({
             onCase={text(item[field])}
             busy={promoting === field}
             disabled={promoting !== null}
+            contested={field === "location" && isContested(item, "location")}
             onPromote={() => void promote(field)}
           />
         ))}
@@ -223,6 +259,7 @@ function PromotableRow({
   onCase,
   busy,
   disabled,
+  contested,
   onPromote,
 }: {
   label: string;
@@ -231,6 +268,8 @@ function PromotableRow({
   onCase: string | null;
   busy: boolean;
   disabled: boolean;
+  /** Residents disagree about this field, so this account is one of several. */
+  contested: boolean;
   onPromote: () => void;
 }) {
   const isOnCase = value !== null && value === onCase;
@@ -238,7 +277,10 @@ function PromotableRow({
   return (
     <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
       <div className="min-w-[min(100%,320px)] flex-1">
-        <p className="text-[12px] leading-[18px] text-slate-500">{label}</p>
+        <p className="flex flex-wrap items-center gap-2 text-[12px] leading-[18px] text-slate-500">
+          {label}
+          {contested && value !== null ? <Contested /> : null}
+        </p>
         <p className="mt-1 text-[13.5px] leading-5 break-words text-slate-900">
           {value ?? <Absent>Not given</Absent>}
         </p>

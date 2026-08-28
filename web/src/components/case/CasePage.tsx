@@ -465,8 +465,15 @@ export function CasePage({
                 duration={duration}
                 reporterCount={facts.reporterCount}
                 changed={flashed}
+                onViewReports={() => setTab("Reports")}
               />
-              <CollectedDetails geo={facts.geo} description={facts.description} changed={flashed} />
+              <CollectedDetails
+                item={item}
+                geo={facts.geo}
+                description={facts.description}
+                changed={flashed}
+                onViewReports={() => setTab("Reports")}
+              />
             </div>
             <div className="flex min-w-0 flex-col gap-6">
               <ReportersCard facts={facts} changed={flashed} onViewAll={() => setTab("Reports")} />
