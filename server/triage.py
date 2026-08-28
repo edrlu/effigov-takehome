@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 
 from server.models import Case, CaseStatus, Department, IssueType, Priority
 
@@ -91,31 +92,109 @@ def location_tokens(location: str | None) -> set[str]:
     }
 
 
+# How alike two words have to be before they count as the same one.
+#
+# Every location this compares was transcribed from speech, and a street name
+# is exactly what a recognizer half-hears: "Carleton" comes back as "Carlton",
+# "Shattuck" as "Shatuck". Under exact token matching those are different
+# streets, so the same caller reporting the same pothole twice opened two
+# cases - which is the bug this exists to fix.
+#
+# 0.85 is tight enough that genuinely different streets stay different -
+# "Carleton"/"Bancroft" is 0.17, "Dwight"/"Bancroft" is 0.29 - and loose enough
+# to absorb a dropped or swapped letter. Note that this *loosens* matching, so
+# ``DEDUPE_THRESHOLD`` deliberately does not move with it: a false merge is
+# still worse than a false split, and only one of the two knobs should give.
+WORD_SIMILARITY = 0.85
+
+
+def same_word(a: str, b: str) -> bool:
+    """Whether two transcribed words are the same word, spelling drift aside."""
+    if a == b:
+        return True
+    # A length gap this wide is a different word, not a misheard one, and
+    # skipping the ratio keeps the pairwise loop below cheap.
+    if abs(len(a) - len(b)) > 2:
+        return False
+    return SequenceMatcher(None, a, b).ratio() >= WORD_SIMILARITY
+
+
+def _overlap(left: set[str], right: set[str]) -> int:
+    """How many words the two sets share, counting near-identical ones as shared.
+
+    A greedy one-to-one pairing over sorted tokens: each word on the left
+    claims at most one partner on the right, so "shattuck" cannot match both
+    "shatuck" and "shattuck" and inflate the overlap past the set size. Sorted
+    because a set has no order and this has to answer the same way every time.
+    """
+    unclaimed = sorted(right)
+    shared = 0
+    for word in sorted(left):
+        for index, other in enumerate(unclaimed):
+            if same_word(word, other):
+                del unclaimed[index]
+                shared += 1
+                break
+    return shared
+
+
 def location_similarity(a: str | None, b: str | None) -> float:
-    """Jaccard overlap of identifying words. Order independent by construction,
-    so "Shattuck and University" matches "University and Shattuck" exactly."""
+    """Jaccard overlap of identifying words, compared fuzzily.
+
+    Order independent by construction, so "Shattuck and University" matches
+    "University and Shattuck" exactly - and spelling independent within reason,
+    so "Carleton Street" matches "Carlton Street", which transcription produces
+    constantly and which used to score 0.0.
+    """
     left, right = location_tokens(a), location_tokens(b)
     if not left or not right:
         return 0.0
-    return len(left & right) / len(left | right)
+    shared = _overlap(left, right)
+    return shared / (len(left) + len(right) - shared)
+
+
+# A caller reaching an open case they have already reported, about the same
+# kind of problem, inside the window. Scored above any wording comparison
+# because it is better evidence than one: the number is the same person.
+PHONE_MATCH_SCORE = 0.95
 
 
 def find_duplicate(
     candidates: list[Case],
     issue_type: IssueType | None,
     location: str | None,
+    *,
+    reported_case_ids: frozenset[int] = frozenset(),
 ) -> tuple[Case, float] | None:
     """Best open case describing the same problem in the same place, if any.
 
     Conservative by design: same issue type, still open, reported recently, and
     a strong location overlap. A false merge is much worse than a false split,
     because a merged case hides a second resident's report.
+
+    ``reported_case_ids`` are the cases this caller's phone number has already
+    reported - the strongest signal available and, until now, unused. Same
+    number and same issue type on an open case is almost certainly the same
+    person about the same problem, so it matches even when the wording of the
+    location does not line up.
+
+    It is guarded rather than trusted outright, because one resident genuinely
+    can report two different problems:
+
+    * the issue type must still match, so their pothole never merges into their
+      noise complaint;
+    * the case must still be open and inside the window, as before;
+    * and if both sides name a location and those locations share no
+      identifying word at all, they are two different places and it does not
+      match - a pothole on Shattuck is not the pothole on Marina, whoever rings
+      about them.
     """
-    if issue_type is None or not location_tokens(location):
+    if issue_type is None:
         return None
 
     cutoff = datetime.now(timezone.utc) - DEDUPE_WINDOW
     best: tuple[Case, float] | None = None
+    spoken = location_tokens(location)
 
     for case in candidates:
         if case.issue_type != issue_type:
@@ -128,7 +207,12 @@ def find_duplicate(
         if created < cutoff:
             continue
 
-        score = location_similarity(case.location, location)
+        score = location_similarity(case.location, location) if spoken else 0.0
+
+        known = case.id is not None and case.id in reported_case_ids
+        if known and not (spoken and location_tokens(case.location) and score == 0.0):
+            score = max(score, PHONE_MATCH_SCORE)
+
         if score >= DEDUPE_THRESHOLD and (best is None or score > best[1]):
             best = (case, score)
 
