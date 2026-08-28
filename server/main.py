@@ -58,6 +58,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from server.analytics import router as stats_router  # noqa: E402  (kept local to one hunk)
+
+app.include_router(stats_router)
+
 
 def _case_or_404(session: Session, case_id: int) -> Case:
     case = session.get(Case, case_id)
