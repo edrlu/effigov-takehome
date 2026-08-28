@@ -1,7 +1,9 @@
 import type { CaseStatus, Department, IssueType, Priority } from "@/lib/types";
 import {
+  confidencePercent,
   departmentLabel,
   scoreTone,
+  CONFIDENCE_THRESHOLD,
   ISSUE_LABEL,
   PRIORITY_DOT,
   PRIORITY_LABEL,
@@ -33,13 +35,64 @@ export function PriorityTag({ priority }: { priority: Priority }) {
   );
 }
 
-export function IssueTag({ issue }: { issue: IssueType | null }) {
-  if (!issue) {
-    return <span className="text-[12px] text-faint">Unclassified</span>;
+/**
+ * The classification story in one control.
+ *
+ * All three states are the same bordered pill at the same line-height, so a
+ * case going from "being classified" to a committed issue type never changes
+ * the height of the row it sits in. `settling` adds a one-shot ring the moment
+ * a confident type lands, which reads as an event rather than another flash.
+ */
+export function IssueTag({
+  issue,
+  confidence,
+  settling = false,
+  className = "",
+}: {
+  issue: IssueType | null;
+  confidence?: number | null;
+  settling?: boolean;
+  className?: string;
+}) {
+  const percent = confidencePercent(confidence);
+
+  if (issue) {
+    return (
+      <span
+        className={`inline-flex max-w-full items-center gap-1.5 truncate rounded border border-line bg-raised px-1.5 py-0.5 text-[11px] leading-4 text-muted ${
+          settling ? "settle-ring" : ""
+        } ${className}`}
+        title={percent ? `Classified with ${percent} confidence` : "Issue type"}
+      >
+        {ISSUE_LABEL[issue] ?? issue}
+        {percent ? <span className="shrink-0 tabular-nums text-faint">{percent}</span> : null}
+      </span>
+    );
   }
+
+  // A confidence with no committed type is not an empty field: the agent has a
+  // guess that has not cleared the threshold yet.
+  if (percent) {
+    return (
+      <span
+        className={`inline-flex max-w-full items-center gap-1.5 truncate rounded border border-dashed border-accent/40 bg-accent/8 px-1.5 py-0.5 text-[11px] leading-4 text-accent ${className}`}
+        title={`Still classifying - ${percent} confident, below the ${Math.round(
+          CONFIDENCE_THRESHOLD * 100,
+        )}% threshold`}
+      >
+        <span aria-hidden className="interim-pulse h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+        Classifying
+        <span className="shrink-0 tabular-nums text-accent/70">{percent}</span>
+      </span>
+    );
+  }
+
   return (
-    <span className="inline-flex max-w-full items-center truncate rounded border border-line bg-raised px-1.5 py-0.5 text-[11px] leading-4 text-muted">
-      {ISSUE_LABEL[issue] ?? issue}
+    <span
+      className={`inline-flex max-w-full items-center truncate rounded border border-dashed border-line-strong px-1.5 py-0.5 text-[11px] leading-4 text-faint ${className}`}
+      title="No issue type captured yet"
+    >
+      Unclassified
     </span>
   );
 }

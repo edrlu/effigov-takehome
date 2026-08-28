@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { ConnectionStatus } from "@/components/ConnectionStatus";
 import { useLiveEvents } from "@/lib/useLiveEvents";
 
 const LINKS = [
@@ -9,19 +10,19 @@ const LINKS = [
   { href: "/call", label: "Start a call" },
 ];
 
-const STATUS_COPY = {
-  connecting: { label: "Connecting", dot: "bg-faint", text: "text-faint", pulse: false },
-  live: { label: "Live", dot: "bg-green-400", text: "text-green-300", pulse: true },
-  reconnecting: { label: "Reconnecting", dot: "bg-amber-400", text: "text-amber-300", pulse: false },
-} as const;
-
 export function TopNav() {
   const pathname = usePathname();
   const { status } = useLiveEvents({});
-  const copy = STATUS_COPY[status];
+  const down = status === "reconnecting";
 
   return (
-    <header className="sticky top-0 z-30 border-b border-line bg-canvas/85 backdrop-blur-md">
+    <header
+      className={`sticky top-0 z-30 border-b bg-canvas/85 backdrop-blur-md transition-colors ${
+        // A second, quieter signal that the feed is down, for anyone whose eyes
+        // are on the table rather than the indicator.
+        down ? "border-amber-400/35" : "border-line"
+      }`}
+    >
       <div className="mx-auto flex h-14 max-w-[1280px] items-center gap-6 px-4 sm:px-6">
         <Link href="/" className="flex shrink-0 items-center gap-2.5">
           <span className="flex h-6 w-6 items-center justify-center rounded bg-accent text-[12px] font-bold text-canvas">
@@ -49,9 +50,8 @@ export function TopNav() {
           })}
         </nav>
 
-        <div className="ml-auto flex shrink-0 items-center gap-2" title={`Realtime feed: ${copy.label}`}>
-          <span className={`h-1.5 w-1.5 rounded-full ${copy.dot} ${copy.pulse ? "live-dot" : ""}`} />
-          <span className={`hidden text-[12px] sm:inline ${copy.text}`}>{copy.label}</span>
+        <div className="ml-auto flex shrink-0 items-center">
+          <ConnectionStatus />
         </div>
       </div>
     </header>

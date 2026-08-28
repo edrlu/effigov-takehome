@@ -30,6 +30,14 @@ export type Department =
 
 export type CallStatus = "active" | "completed";
 
+/**
+ * Fine-grained live progression staff watch, orthogonal to `CallStatus`.
+ * `status` stays the coarse lifecycle; `phase` is what moves during a call.
+ */
+export type CallPhase = "greeting" | "gathering" | "filed" | "wrapping" | "ended";
+
+export const CALL_PHASES: CallPhase[] = ["greeting", "gathering", "filed", "wrapping", "ended"];
+
 export type EventKind =
   | "case.created"
   | "case.updated"
@@ -40,12 +48,20 @@ export type EventKind =
   | "report.merged"
   | "case.escalated"
   | "case.routed"
-  | "priority.changed";
+  | "priority.changed"
+  | "call.phase";
 
 export interface Case {
   id: number;
   case_number: string;
   issue_type: IssueType | null;
+  /**
+   * How sure the agent is of `issue_type`, 0.0-1.0. The backend only commits
+   * `issue_type` at or above CONFIDENCE_THRESHOLD, so a case can carry a
+   * confidence while `issue_type` is still null: that is "being classified",
+   * not "empty".
+   */
+  issue_type_confidence?: number | null;
   department: Department | null;
   location: string | null;
   description: string | null;
@@ -82,6 +98,7 @@ export interface Call {
   case_id: number | null;
   report_id?: number | null;
   status: CallStatus;
+  phase: CallPhase;
   caller_phone: string | null;
   summary: string | null;
   started_at: string;
@@ -91,9 +108,26 @@ export interface Call {
 export interface Turn {
   id: number;
   call_id: number;
-  role: "caller" | "agent";
+  /** Per-call monotonic counter starting at 1; unique per (call_id, turn_seq). */
+  turn_seq: number;
+  role: TurnRole;
   text: string;
   created_at: string;
+}
+
+export type TurnRole = "caller" | "agent";
+
+/**
+ * An interim utterance. Never persisted: it carries the `turn_seq` the eventual
+ * final `Turn` will use, and the full text so far, so the client replaces
+ * rather than concatenates.
+ */
+export interface TranscriptDelta {
+  call_id: number;
+  turn_seq: number;
+  role: TurnRole;
+  text: string;
+  final: false;
 }
 
 export interface CaseEvent {
@@ -141,4 +175,14 @@ export function caseLocation(item: Case): string | null {
 
 export function isEscalated(item: Case): boolean {
   return item.escalated === true;
+}
+
+/** A case the agent has an opinion about but has not committed to yet. */
+export function isClassifying(item: Case): boolean {
+  return item.issue_type === null && typeof item.issue_type_confidence === "number";
+}
+
+export function callPhase(call: Pick<Call, "phase" | "status">): CallPhase {
+  if (call.phase) return call.phase;
+  return call.status === "completed" ? "ended" : "greeting";
 }
