@@ -85,6 +85,19 @@ async def patch_call(client: httpx.AsyncClient, call_id: int, **fields) -> dict:
     return r.json()
 
 
+async def link_call(client: httpx.AsyncClient, call_id: int, filed: dict) -> dict:
+    """Put the case and report a call produced back onto the call itself.
+
+    ``agent.main.file_report`` does exactly this the moment a report is filed.
+    Without it the call row keeps a null ``case_id``, and the console shows a
+    finished call as "No case linked yet" - so the no-microphone path would
+    tell a different story from the one a real session tells.
+    """
+    return await patch_call(
+        client, call_id, case_id=filed["case"]["id"], report_id=filed["report"]["id"]
+    )
+
+
 # Real Berkeley coordinates, recorded rather than looked up. The backend
 # geocodes every one of these strings for itself, off the request path, and
 # gets exactly these answers - but a rehearsal has to draw its map in a room
@@ -183,6 +196,7 @@ async def call_one(client: httpx.AsyncClient) -> dict:
         )
     ).json()
     case = filed["case"]
+    await link_call(client, call["id"], filed)
     await phase(client, call["id"], "filed", "Confirming the report and taking details.")
     case = await pin(client, case)
     print(
@@ -293,6 +307,7 @@ async def call_two(client: httpx.AsyncClient, first: dict) -> None:
             },
         )
     ).json()
+    await link_call(client, call["id"], second)
     await phase(client, call["id"], "filed", "Telling the caller the city already knows.")
     case = second["case"]
     print(
@@ -333,6 +348,7 @@ async def call_three(client: httpx.AsyncClient) -> dict:
             },
         )
     ).json()
+    await link_call(client, call["id"], third)
     await phase(client, call["id"], "filed", "Escalating a live hazard to a person.")
     await pin(client, third["case"])
     escalated = (

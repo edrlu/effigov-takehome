@@ -512,7 +512,7 @@ def backfill_history() -> None:
             case.priority = priority_band(case.priority_score)
             session.add(case)
 
-        # --- calls: eight days of volume, plus two still on the line ---------
+        # --- calls: a fortnight of volume, all of them finished --------------
         for day_offset in range(HISTORY_DAYS):
             for _ in range(RNG.randint(2, 9)):
                 started = now - timedelta(
@@ -539,18 +539,27 @@ def backfill_history() -> None:
                     )
                 )
 
+        # Two calls from the last few minutes, so "today" has something recent
+        # in it. They are finished, like every other call the seed writes.
+        # A seeded call left ``active`` never ends: the live console adopts it
+        # on a cold load and counts up beside a call nobody placed, which is a
+        # phantom on screen during a demo. Only a real session may be live.
         for index in range(2):
             name, phone = CALLERS[index]
+            case = RNG.choice(cases)
+            started = now - timedelta(minutes=RNG.randint(4, 9))
             session.add(
                 Call(
-                    room=f"intake-live-{index}",
-                    status=CallStatus.active,
-                    phase=CallPhase.gathering,
+                    room=f"intake-recent-{index}",
+                    case_id=case.id,
+                    status=CallStatus.completed,
+                    phase=CallPhase.ended,
                     caller_name=name,
                     caller_phone=phone,
                     sentiment=Sentiment.neutral,
-                    activity_line="Confirming the cross street with the caller.",
-                    started_at=now - timedelta(minutes=RNG.randint(1, 6)),
+                    summary=f"Reported: {case.description}" if case.description else None,
+                    started_at=started,
+                    ended_at=started + timedelta(minutes=RNG.randint(2, 3)),
                 )
             )
 
