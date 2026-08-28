@@ -68,9 +68,15 @@ Case                       Report            Call        Turn       Event      O
   issue_type_confidence      reporter_name     report_id   role       field      ts
   department                 reporter_phone    status      text       old_value  frame
   location                   description       phase       created_at new_value
-  description                created_at        summary                actor
-  status                                       started_at             created_at
-  priority                                     ended_at
+  location_text              created_at        summary                actor
+  location_formatted                           started_at             created_at
+  latitude                                     ended_at
+  longitude
+  location_precision
+  location_detail
+  description
+  status
+  priority
   priority_score
   report_count
   escalated
@@ -92,10 +98,34 @@ A `Turn` is durable and final. Interim speech is not: it is a guess the recogniz
 The dashboard renders the delta as a provisional line and replaces it when the `transcript.turn` with the same `(call_id, turn_seq)` arrives.
 A delta always carries the whole utterance so far rather than an incremental suffix, because a revised guess can be *shorter* than the one before it, and a client that concatenates would end up with a sentence the caller never said.
 
+### Where the incident is
+
+`location` is what the caller said and what everything already reads: search, deduplication, the line the agent repeats back.
+The rest of the location fields hang off it.
+`location_text` preserves the caller's own phrasing even after a staff member tidies `location` up.
+`location_formatted`, `latitude` and `longitude` are what OpenStreetMap's Nominatim made of it, and `location_detail` is the free-text note the agent asks for separately - "right lane near the crosswalk, curb side" - because an address gets a crew to the block and that is what stops them driving past the thing twice.
+
+`location_precision` is the honest field and matters more than the coordinates.
+It is derived from Nominatim's own account of what it matched, never from how confident the caller sounded.
+The house number asked for being the house number found is `exact`, and so is a named crossing, which Nominatim returns as "Ashby Avenue & Sacramento Street".
+"near the Safeway on Shattuck" resolves to a real point that is not the point the caller meant, so it is `approximate` and the dashboard labels it that way.
+Nothing resolved at all is `unresolved`, and the case is still perfectly usable on the words alone.
+
+Every query is bounded to a Berkeley viewbox with `bounded=1` and `countrycodes=us`, so a confident match on a Shattuck Avenue in another state cannot come back: a wrong pin is worse than no pin.
+Lookups are rate limited to one a second and cached by normalized query, per Nominatim's usage policy.
+
+Geocoding never runs on the request path.
+It is a background task that opens its own session and writes the result back through `server/store.py` like any other change, so it lands as a `case.updated` frame whose `changed` list names exactly which location fields moved.
+There is no separate frame type for a map pin.
+Nominatim being unreachable, slow, or empty all mean the same thing: keep the text, mark it `unresolved`, log it, move on.
+A resident on the phone never waits on OpenStreetMap and a case never fails to open because it was down.
+Changing `location` clears the coordinates that belonged to the old wording and re-geocodes, and a lookup that returns late never overwrites a pin a staff member set by hand.
+Set `EFFIGOV_GEOCODE=0` to keep a process off the network entirely; the test suite does.
+
 ### Migrating an existing database
 
 `init_db` runs an additive migration before `create_all`: it reads each table's columns and `ALTER TABLE ADD COLUMN`s the ones the running code expects but an older file lacks, then backfills them.
-A call that already hung up gets `phase = ended` rather than the default, and old turns recover their `turn_seq` from their insertion order.
+A call that already hung up gets `phase = ended` rather than the default, old turns recover their `turn_seq` from their insertion order, and an old case's `location_text` is backfilled from its `location`, which is what that column held before anything could edit it.
 
 Additive rather than "delete the file and start again", because `effigov.db` is gitignored but it is also the demo's memory: wiping it on every schema change throws away the cases a rehearsal just built.
 Nothing is dropped or rewritten, so an old database keeps working and a downgrade loses no data. Full migrations are a Postgres-and-Alembic problem, and this is deliberately not that.
@@ -174,6 +204,8 @@ uv run pytest                             # triage rules and the write path
 | WS | `/ws?since=<seq>` | Live stream, resumable. See below |
 
 `POST /api/reports` and `PATCH /api/cases/{id}` both take an optional `issue_type_confidence` alongside `issue_type`.
+Setting `location` on either is enough to get a pin: the geocode runs in the background and arrives as a later `case.updated`.
+`PATCH /api/cases/{id}` also accepts the geocoded fields directly, so staff can correct a pin and seed data can stand a map up with no network.
 `PATCH /api/calls/{id}` takes `phase`.
 
 ### The websocket contract
@@ -203,7 +235,7 @@ The client may send `{"type":"ping"}` and gets a `pong` back; any other client f
 | Tool | What it does |
 | --- | --- |
 | `file_report` | Files the report as soon as the problem and place are known. Tells the agent whether it merged, and whether its confidence was too low to categorise |
-| `update_request` | Patches the reporter's name and number, and the case's location, description, type, and category confidence |
+| `update_request` | Patches the reporter's name and number, and the case's location, on-street detail, description, type, and category confidence |
 | `look_up_request` | Finds an existing case by case number or phone |
 | `add_case_note` | Appends a note |
 | `escalate_to_human` | Flags an immediate danger for human review |

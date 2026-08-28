@@ -11,6 +11,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 For the same reason `_log` snapshots each `Event` with `serialize` at write time rather than holding the instance until publish: the caller's own commit would expire it first.
 
+**Geocoding is off by default in the suite, and must stay that way.**
+`server/geocode.py` runs as a FastAPI background task that opens its own `Session(server.db.engine)` - not the test-overridden one - so an un-gated geocode in a test both reaches the network and writes to the developer's own `effigov.db`. `tests/conftest.py` sets `EFFIGOV_GEOCODE=0` for the whole suite; a test that wants the real path re-enables it and stubs `geocode._fetch`.
+
 **Frames a websocket test asserts on must be fenced, not slept on.**
 `{"type":"ping"}` is queued through the same per-client writer as data frames, so a `pong` can only arrive after everything published before it. `tests/test_live.py::read_until_quiet` uses that; a bare `receive_json()` with nothing pending blocks forever and hangs the suite.
 

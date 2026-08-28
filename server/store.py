@@ -36,6 +36,7 @@ from server.models import (
     CaseStatus,
     Event,
     IssueType,
+    LocationPrecision,
     Outbox,
     Report,
     Turn,
@@ -48,12 +49,23 @@ MUTABLE_CASE_FIELDS = {
     "issue_type_confidence",
     "department",
     "location",
+    "location_text",
+    "location_formatted",
+    "latitude",
+    "longitude",
+    "location_precision",
+    "location_detail",
     "description",
     "status",
     "priority",
     "notes",
     "summary",
 }
+
+# What the geocoder owns. Moving ``location`` invalidates all of them at once,
+# and a geocode rewrites all of them at once, because a formatted address from
+# one lookup beside coordinates from another is not a location, it is a bug.
+GEOCODED_CASE_FIELDS = ("location_formatted", "latitude", "longitude", "location_precision")
 
 MUTABLE_REPORT_FIELDS = ("reporter_name", "reporter_phone", "description")
 
@@ -281,6 +293,10 @@ def create_case(session: Session, data: dict[str, Any], *, actor: str = "voice_a
     case = Case(**_gated_issue_type(data))
     if case.department is None or data.get("department") is None:
         case.department = triage.route(case.issue_type)
+    if case.location and not case.location_text:
+        # Nobody has edited it yet, so what the caller said and what the case
+        # records are the same string. They diverge the moment staff tidy one up.
+        case.location_text = case.location
     session.add(case)
     session.commit()
     session.refresh(case)
@@ -331,6 +347,9 @@ def update_case(
             actor=actor,
         )
 
+    if "location" in changed:
+        changed += _relocate(case, gated)
+
     # A corrected issue type re-routes the case. Routing is never typed by hand.
     if "issue_type" in changed and "department" not in gated:
         department = triage.route(case.issue_type)
@@ -353,6 +372,81 @@ def update_case(
     if not changed:
         # Nothing moved. The agent re-sending what it already told us is not
         # news, so the dashboard hears nothing.
+        return case
+
+    case.updated_at = utcnow()
+    session.add(case)
+    session.commit()
+    session.refresh(case)
+
+    publish(session, "case.updated", {"case": serialize(case), "changed": changed})
+    return case
+
+
+def _relocate(case: Case, gated: dict[str, Any]) -> list[str]:
+    """The location moved. Carry the caller's words across and drop the old pin.
+
+    Coordinates are an answer to a question about a *particular* string. Once
+    that string changes the old answer is not merely stale, it points somewhere
+    the case is not, so it is cleared and the case goes back to ``unresolved``
+    until the geocoder catches up. Anything the caller of this function set
+    explicitly stands: a staff member correcting an address and its pin in one
+    PATCH means both, not one overwriting the other.
+    """
+    moved: list[str] = []
+    if "location_text" not in gated:
+        case.location_text = case.location
+        moved.append("location_text")
+    for field in GEOCODED_CASE_FIELDS:
+        if field in gated:
+            continue
+        blank = LocationPrecision.unresolved if field == "location_precision" else None
+        if getattr(case, field) != blank:
+            setattr(case, field, blank)
+            moved.append(field)
+    return moved
+
+
+def apply_geocode(
+    session: Session,
+    case: Case,
+    *,
+    formatted: str | None,
+    latitude: float | None,
+    longitude: float | None,
+    precision: LocationPrecision,
+    actor: str = "system",
+) -> Case:
+    """Record what the geocoder made of this case's location.
+
+    This is deliberately not a frame type of its own. A resolved location is
+    the case changing, exactly like a corrected category is, so it rides
+    ``case.updated`` with ``changed`` naming which of the location fields moved
+    - and publishes nothing at all when the answer is the one already stored.
+    """
+    values = {
+        "location_formatted": formatted,
+        "latitude": latitude,
+        "longitude": longitude,
+        "location_precision": precision,
+    }
+    changed: list[str] = []
+    for field, value in values.items():
+        if getattr(case, field) == value:
+            continue
+        _log(
+            session,
+            kind="case.updated",
+            case_id=case.id,
+            field=field,
+            old=getattr(case, field),
+            new=value,
+            actor=actor,
+        )
+        setattr(case, field, value)
+        changed.append(field)
+
+    if not changed:
         return case
 
     case.updated_at = utcnow()
@@ -468,6 +562,7 @@ def file_report(
                 "issue_type": issue_type,
                 "issue_type_confidence": issue_type_confidence,
                 "location": location,
+                "location_text": location,
                 "description": description,
             },
             actor=actor,

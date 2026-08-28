@@ -15,12 +15,19 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api as lkapi
 from sqlmodel import Session, select
 
-from server import store
+from server import geocode, store
 from server.db import get_session, init_db
 from server.hub import envelope as hub_envelope
 from server.hub import hub
@@ -90,10 +97,12 @@ async def health() -> dict[str, str]:
 @app.post("/api/cases", status_code=201)
 async def create_case(
     body: CaseCreate,
+    background: BackgroundTasks,
     actor: str = "voice_agent",
     session: Session = Depends(get_session),
 ):
     case = store.create_case(session, body.model_dump(exclude_none=True), actor=actor)
+    geocode.schedule(background, case)
     return store.serialize(case)
 
 
@@ -148,11 +157,13 @@ async def get_case(case_id: int, session: Session = Depends(get_session)):
 async def update_case(
     case_id: int,
     body: CaseUpdate,
+    background: BackgroundTasks,
     actor: str = "staff",
     session: Session = Depends(get_session),
 ):
     case = _case_or_404(session, case_id)
     case = store.update_case(session, case, body.model_dump(exclude_none=True), actor=actor)
+    geocode.schedule(background, case)
     return store.serialize(case)
 
 
@@ -210,6 +221,7 @@ async def case_reports(case_id: int, session: Session = Depends(get_session)):
 @app.post("/api/reports", status_code=201)
 async def file_report(
     body: ReportCreate,
+    background: BackgroundTasks,
     actor: str = "voice_agent",
     session: Session = Depends(get_session),
 ):
@@ -224,6 +236,7 @@ async def file_report(
         call_id=body.call_id,
         actor=actor,
     )
+    geocode.schedule(background, case)
     return {
         "report": store.serialize(report),
         "case": store.serialize(case),

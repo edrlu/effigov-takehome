@@ -87,6 +87,21 @@ class Sentiment(str, Enum):
     negative = "negative"
 
 
+class LocationPrecision(str, Enum):
+    """How much the recorded coordinates can be trusted.
+
+    This is the honest part of a geocode and matters more than the numbers. A
+    crew sent to a point labelled ``approximate`` knows to look around; one sent
+    to a point that merely *looks* precise does not. ``unresolved`` means the
+    caller's words are all the city has, which is a fact about the case, not an
+    error to hide.
+    """
+
+    exact = "exact"
+    approximate = "approximate"
+    unresolved = "unresolved"
+
+
 class CallPhase(str, Enum):
     """Where a live call has got to, for staff watching it happen.
 
@@ -114,7 +129,26 @@ class Case(SQLModel, table=True):
     # than "nobody knows".
     issue_type_confidence: float | None = Field(default=None)
     department: Department = Field(default=Department.unassigned, index=True)
+
+    # ``location`` is what everything already reads: search, deduplication, the
+    # line the agent says back to the caller. The fields below hang off it.
+    # ``location_text`` keeps the caller's own phrasing even after a staff
+    # member tidies ``location`` up, and the rest are what the geocoder made of
+    # it. They move together and are always rewritten as a set, so a pin can
+    # never belong to a location the case no longer has.
     location: str | None = None
+    location_text: str | None = None
+    location_formatted: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    location_precision: LocationPrecision = Field(
+        default=LocationPrecision.unresolved, index=True
+    )
+    # Where exactly on that street, in the caller's words: "right lane near the
+    # crosswalk, curb side". No geocoder produces this and no map pin replaces
+    # it - it is what stops a crew driving past the thing twice.
+    location_detail: str | None = None
+
     description: str | None = None
 
     status: CaseStatus = Field(default=CaseStatus.new, index=True)

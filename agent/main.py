@@ -62,7 +62,7 @@ IssueType = Literal[
 
 # The prompt and the code both use this, so the agent cannot be told to open
 # with one line while the session speaks another.
-GREETING = "Hi, this is Emma from Berkeley. How can I help you today?"
+GREETING = "Berkeley 311, this is Emma. How can I help you today?"
 
 # One short present-tense line per phase, for the supervisor console. The agent
 # can say something more specific; this is what it falls back to so the line is
@@ -110,6 +110,9 @@ Your job is one of two things.
 
 Rules:
 - Confirm phone numbers and locations by repeating them back before you save.
+- Once you have the street address, ask one more question: whereabouts on the
+  street the problem actually is. Save the answer as `location_detail` on
+  `update_request`. A crew given a block and no landmark drives past it twice.
 - If the caller describes an immediate danger to people, such as a sparking or
   downed power line, a gas smell, active flooding, or a blocked fire exit, call
   `escalate_to_human` right away with a one line reason, tell the caller a
@@ -293,6 +296,7 @@ class IntakeAgent(Agent):
         caller_name: str | None = None,
         phone: str | None = None,
         location: str | None = None,
+        location_detail: str | None = None,
         description: str | None = None,
         issue_type: IssueType | None = None,
         issue_type_confidence: float | None = None,
@@ -303,7 +307,12 @@ class IntakeAgent(Agent):
             caller_name: Caller's full name, as they said it.
             phone: Callback number, digits only.
             location: A corrected or more precise location for the problem.
-            description: An improved description of the problem.
+            location_detail: Where exactly on that street the problem is, once
+                you have the address. Ask for it: "whereabouts on the street is
+                it?". One short phrase in the caller's own words, such as
+                "right lane near the crosswalk, curb side" or "back alley
+                behind the pharmacy". The address gets a crew to the block; this
+                is what stops them driving past the thing twice.
             issue_type: A corrected category, if the first guess was wrong.
             issue_type_confidence: How sure you are of that category, 0.0 to 1.0.
                 Required whenever you pass issue_type. Report it honestly: below
@@ -329,10 +338,11 @@ class IntakeAgent(Agent):
                 description=description,
             )
 
-        if location or description or issue_type:
+        if location or location_detail or description or issue_type:
             await state.api.update_case(
                 state.case_id,
                 location=location,
+                location_detail=location_detail,
                 description=description,
                 issue_type=issue_type,
                 issue_type_confidence=issue_type_confidence,
@@ -342,6 +352,7 @@ class IntakeAgent(Agent):
             "caller_name": caller_name,
             "phone": phone,
             "location": location,
+            "location_detail": location_detail,
             "description": description,
             "issue_type": issue_type,
         }

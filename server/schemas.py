@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from server.models import CallPhase, CaseStatus, Department, IssueType, Priority, Sentiment
+from server.models import (
+    CallPhase,
+    CaseStatus,
+    Department,
+    IssueType,
+    LocationPrecision,
+    Priority,
+    Sentiment,
+)
 
 
 class CaseCreate(BaseModel):
@@ -12,6 +20,7 @@ class CaseCreate(BaseModel):
     issue_type_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     department: Department | None = None
     location: str | None = None
+    location_detail: str | None = None
     description: str | None = None
     status: CaseStatus = CaseStatus.new
     notes: str | None = None
@@ -22,6 +31,15 @@ class CaseUpdate(BaseModel):
     issue_type_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     department: Department | None = None
     location: str | None = None
+    # ``location`` alone is enough: the geocoder fills the rest in. These are
+    # here so staff can correct a pin the geocoder got wrong, and so seed and
+    # rehearsal data can stand up a map without a live network call.
+    location_text: str | None = None
+    location_formatted: str | None = None
+    latitude: float | None = Field(default=None, ge=-90.0, le=90.0)
+    longitude: float | None = Field(default=None, ge=-180.0, le=180.0)
+    location_precision: LocationPrecision | None = None
+    location_detail: str | None = None
     description: str | None = None
     status: CaseStatus | None = None
     priority: Priority | None = None
