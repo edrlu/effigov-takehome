@@ -719,7 +719,12 @@ def file_report(
         open_cases = session.exec(
             select(Case).where(Case.status != CaseStatus.resolved).order_by(Case.created_at.desc())
         ).all()
-        match = triage.find_duplicate(open_cases, issue_type, location)
+        match = triage.find_duplicate(
+            open_cases,
+            issue_type,
+            location,
+            reported_case_ids=_cases_reported_by(session, reporter_phone),
+        )
 
         merged = match is not None
         if merged:
@@ -822,6 +827,14 @@ def file_report(
         },
     )
     return report, case, merged, repeat
+
+
+def _cases_reported_by(session: Session, phone: str | None) -> frozenset[int]:
+    """Cases this number has already reported. The strongest matching signal."""
+    if not phone:
+        return frozenset()
+    rows = session.exec(select(Report.case_id).where(Report.reporter_phone == phone)).all()
+    return frozenset(rows)
 
 
 def _report_for_phone(session: Session, case: Case, phone: str | None) -> Report | None:

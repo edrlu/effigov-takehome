@@ -153,22 +153,48 @@ def location_similarity(a: str | None, b: str | None) -> float:
     return shared / (len(left) + len(right) - shared)
 
 
+# A caller reaching an open case they have already reported, about the same
+# kind of problem, inside the window. Scored above any wording comparison
+# because it is better evidence than one: the number is the same person.
+PHONE_MATCH_SCORE = 0.95
+
+
 def find_duplicate(
     candidates: list[Case],
     issue_type: IssueType | None,
     location: str | None,
+    *,
+    reported_case_ids: frozenset[int] = frozenset(),
 ) -> tuple[Case, float] | None:
     """Best open case describing the same problem in the same place, if any.
 
     Conservative by design: same issue type, still open, reported recently, and
     a strong location overlap. A false merge is much worse than a false split,
     because a merged case hides a second resident's report.
+
+    ``reported_case_ids`` are the cases this caller's phone number has already
+    reported - the strongest signal available and, until now, unused. Same
+    number and same issue type on an open case is almost certainly the same
+    person about the same problem, so it matches even when the wording of the
+    location does not line up.
+
+    It is guarded rather than trusted outright, because one resident genuinely
+    can report two different problems:
+
+    * the issue type must still match, so their pothole never merges into their
+      noise complaint;
+    * the case must still be open and inside the window, as before;
+    * and if both sides name a location and those locations share no
+      identifying word at all, they are two different places and it does not
+      match - a pothole on Shattuck is not the pothole on Marina, whoever rings
+      about them.
     """
-    if issue_type is None or not location_tokens(location):
+    if issue_type is None:
         return None
 
     cutoff = datetime.now(timezone.utc) - DEDUPE_WINDOW
     best: tuple[Case, float] | None = None
+    spoken = location_tokens(location)
 
     for case in candidates:
         if case.issue_type != issue_type:
@@ -181,7 +207,12 @@ def find_duplicate(
         if created < cutoff:
             continue
 
-        score = location_similarity(case.location, location)
+        score = location_similarity(case.location, location) if spoken else 0.0
+
+        known = case.id is not None and case.id in reported_case_ids
+        if known and not (spoken and location_tokens(case.location) and score == 0.0):
+            score = max(score, PHONE_MATCH_SCORE)
+
         if score >= DEDUPE_THRESHOLD and (best is None or score > best[1]):
             best = (case, score)
 
