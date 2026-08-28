@@ -56,6 +56,11 @@ Changing the panel's content means re-measuring it in a browser and updating `CO
 `call.started` and the `event.appended` announcing it are dispatched in the same task, so a handler that decides ownership from a ref assigned during render sees the previous value and drops the event.
 `web/src/lib/useCallConsole.ts` assigns those refs inside the handler that adopts the call, not in the render body.
 
+**The four root documents have a form contract, and their Mermaid blocks are verified, not eyeballed.**
+`README.md`, `architecture.md`, `database.md`, and `TESTS.md` are bullet-led with tables for anything enumerable, one sentence per source line, and hard line budgets - README well under 150, architecture under 200, database as long as the schema needs.
+Every ```mermaid block must parse: extract them and run `mermaid.parse` from an installed `mermaid@11` under jsdom rather than trusting the syntax by eye.
+Adding a column, an endpoint, or a surface means updating these too; a document that disagrees with the code is worse than no document.
+
 ## Commands
 
 - `uv run pytest` - the whole suite.

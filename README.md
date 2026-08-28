@@ -5,8 +5,9 @@ Emma works out what the problem is and where it is, then opens a case or recogni
 Staff watch the whole call happen live.
 
 - Service area is Berkeley, California. Anything outside it is not a case this system takes.
-- Emma greets the caller first rather than waiting for them to speak.
-- Emma hangs up on her own once the caller confirms they have nothing to add.
+- Emma greets the caller first rather than waiting for them to speak: "Berkeley 311, this is Emma."
+- Emma hangs up on her own, through an `end_call` tool, once the caller confirms they have nothing to add.
+- Source: <https://github.com/edrlu/effigov-takehome>. The repository and its directory keep the take-home name.
 
 ## The one idea worth understanding
 
@@ -33,7 +34,7 @@ cd web && npm install && cd ..
 ```
 
 - `OPENAI_API_KEY` is the only key you have to supply. LiveKit runs locally in dev mode with the keys already in `.env.example`.
-- Geocoding uses OpenStreetMap Nominatim, which needs no key and no signup.
+- Geocoding uses OpenStreetMap Nominatim, which needs no key and no signup. Set `EFFIGOV_GEOCODE=0` to keep a process off the network.
 
 ## Running
 
@@ -60,10 +61,12 @@ uv run pytest                             # triage rules, write path, wire contr
 
 | URL | What it is |
 | --- | --- |
-| <http://localhost:3000> | Staff dashboard: tiles, recent cases, call volume, case mix, needs attention |
-| <http://localhost:3000/call> | Resident call console: place a call and watch it get transcribed |
-| <http://localhost:3000/cases/{id}> | Case detail: progress, summary, incident location map, activity |
+| <http://localhost:3000> | Staff dashboard: stat tiles with sparklines, recent cases, call volume, case mix, needs attention |
+| <http://localhost:3000/call> | Live call console: place a call and watch it transcribed, extracted, and filed |
+| <http://localhost:3000/cases/{id}> | Case detail: progress, summary, collected details, resident, incident location map, activity |
+| <http://localhost:3000/calls/{id}> | One call on its own: phase, transcript, and the case it produced |
 | <http://localhost:8000/docs> | FastAPI's generated API docs |
+| `http://localhost:8000/api/stats/*` | Read-only dashboard aggregations. Listed in [architecture.md](architecture.md#10-the-analytics-api) |
 | `ws://localhost:8000/ws?since=<seq>` | The live event stream |
 | `ws://localhost:7880` | LiveKit dev server |
 
@@ -71,7 +74,7 @@ uv run pytest                             # triage rules, write path, wire contr
 
 | Path | What lives there |
 | --- | --- |
-| `agent/main.py` | The Emma agent: prompt, function tools, call lifecycle |
+| `agent/main.py` | The Emma agent: prompt, function tools, call lifecycle, hangup |
 | `agent/backend.py` | Async HTTP client the agent writes every fact through |
 | `server/main.py` | FastAPI app: REST handlers and the `/ws` endpoint |
 | `server/store.py` | The single write choke point. Every mutation, audit row, and broadcast |
@@ -82,13 +85,15 @@ uv run pytest                             # triage rules, write path, wire contr
 | `server/db.py` | SQLite engine plus the additive startup migration |
 | `server/hub.py` | In-process websocket fan-out with per-client backpressure |
 | `web/src/app/` | Next.js App Router pages: dashboard, call console, case and call detail |
+| `web/src/components/` | The three surfaces, one directory each: `dashboard/`, `call/`, `case/` |
 | `web/src/lib/useLiveEvents.ts` | The websocket client: cursor, resume, resync gate |
 | `web/fixture/server.mjs` | Zero-dependency backend stand-in for driving the UI |
 | `scripts/seed.py` | Example cases plus a fortnight of backdated history |
 | `scripts/demo_rehearsal.py` | The no-microphone end-to-end demo |
-| `tests/` | Triage rules, the write path, the wire contract, analytics |
+| `tests/` | Triage rules, the write path, the wire contract, geocoding, analytics |
 
 ## Where to read next
 
-- **[architecture.md](architecture.md)** - the three processes, the event protocol, where policy lives, and the honest limitations.
+- **[architecture.md](architecture.md)** - the processes, the event protocol, where policy lives, the analytics API, and the honest limitations.
 - **[database.md](database.md)** - every table, column, enum, index, and which code path writes it.
+- **[TESTS.md](TESTS.md)** - what the suite covers, what was swept by hand, and what was not tested at all.

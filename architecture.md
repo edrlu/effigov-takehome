@@ -1,8 +1,8 @@
 # Emma311: architecture
 
-The system is three processes over one database, and every fact the voice agent learns is written straight through to it.
+The system is three processes of our own over one database, and every fact the voice agent learns is written straight through to it.
 
-- This document is the argument; [README.md](README.md) is the setup guide and [database.md](database.md) is the schema.
+- This document is the argument; [README.md](README.md) is the setup guide, [database.md](database.md) is the schema, and [TESTS.md](TESTS.md) is what was tested.
 - The agent is **Emma**, the service is **Berkeley 311**, and the service area is **Berkeley, California**. She greets first and hangs up herself.
 
 ## 1. The modelling insight
@@ -18,12 +18,11 @@ Cities do not have a call problem, they have a pothole problem.
 | Every caller keeps their callback | Name, phone, and description live on the `Report` |
 | Staff see a call before it has a subject | `Call` is separate, and exists from the moment the room opens |
 | One resolution date survives edits | The transition to `resolved` is an `Event`, not a column |
-
-- A `Call` produces at most one `Report`, so six calls about one pothole are one `Case`, six `Report` rows, and six `Call` rows.
+| Six calls, one incident | One `Case`, six `Report` rows, and six `Call` rows, because a `Call` produces at most one `Report` |
 
 ## 2. Three processes
 
-System topology. Solid hops are the request path; the dashboard hop is the live stream.
+The voice agent, the API, and the dashboard, plus the LiveKit dev server carrying audio; solid hops are the request path and the dashboard hop is the live stream.
 
 ```mermaid
 flowchart LR
@@ -36,9 +35,8 @@ flowchart LR
   API -->|HTTP| Nominatim[OSM Nominatim]
 ```
 
-- **The agent holds no state of its own.** Every fact goes to the backend through a function tool, so the dashboard and the database cannot disagree.
-- **The model reasons, the backend decides.** The language model runs the conversation and extracts intent; it never decides routing, deduplication, or urgency.
-- **One database is the source of truth,** and the dashboard reads the same rows the agent wrote.
+- **The agent holds no state of its own,** and **the model reasons while the backend decides.** Every fact goes to the backend through a function tool as it is learned; the language model runs the conversation and extracts intent, and never decides routing, deduplication, or urgency.
+- **One database is the source of truth,** so the dashboard reads the same rows the agent wrote and the two cannot disagree.
 
 ## 3. Where policy lives
 
@@ -51,9 +49,8 @@ flowchart LR
 | Priority | `severity x 10 + 15 per corroborating report + 1 per day of age (capped at 10) + 50 if escalated`, banded high at 35 and normal at 15 |
 | Confidence gate | An `issue_type` is applied only at confidence >= 0.6, otherwise the case keeps `issue_type: null` and routes to `unassigned` |
 
-- Location comparison strips street suffixes and filler, so "Shattuck and University" scores 1.0 against "University Ave and Shattuck".
-- The dedupe threshold is conservative on purpose: a false merge hides a resident's report, which is worse than a duplicate case.
-- A confidence of `None` means nobody measured it, so a staffer's typed category is taken at face value; only a stated low number is refused.
+- Location comparison strips street suffixes and filler, so "Shattuck and University" scores 1.0 against "University Ave and Shattuck". The dedupe threshold is conservative on purpose: a false merge hides a resident's report, which is worse than a duplicate case.
+- A confidence of `None` means nobody measured it, so a staffer's typed category is taken at face value and only a stated low number is refused.
 
 ## 4. The single write choke point
 
@@ -61,8 +58,7 @@ Every mutation goes through `server/store.py`, which updates the row, appends an
 
 - No handler mutates a model directly, which is why the audit trail is complete and the dashboard never polls.
 - Audit frames are published before the domain frame, so a client applying frames in order sees the reasons before the result.
-- `case.updated`, `call.updated`, and `report.updated` each carry a non-empty `changed` list, and when nothing moved no frame is published at all.
-- That is what makes "file early, patch often" cheap: a repeated identical PATCH is silent rather than a flicker on the board.
+- `case.updated`, `call.updated`, and `report.updated` each carry a non-empty `changed` list, and when nothing moved no frame is published at all, which is what makes "file early, patch often" cheap: a repeated identical PATCH is silent rather than a flicker on the board.
 
 ## 5. One call, end to end
 
@@ -87,14 +83,14 @@ sequenceDiagram
 ```
 
 - `file_report` returns whether the report opened a case or merged into one, and Emma must tell the caller which. Every arrow into `store.py` also writes an `Event`, which streams as `event.appended`.
+- `end_call` is Emma's own tool: it drains the session so the closing line finishes playing, then deletes the room, which triggers the summary and `status = completed`.
 
 ## 6. The live event protocol
 
 The failure this design prevents: a dashboard that has quietly lost its connection while still showing confident data.
 
 - Every frame is exactly `{"v": 1, "seq": 128, "ts": "...", "type": "case.updated", "payload": {...}}`, with `seq` strictly increasing and gap-free. Control frames (`hello`, `pong`, `resync_required`) carry `seq: null`.
-- **Durable outbox.** Each data frame is written as an `Outbox` row and committed *before* broadcast, and `seq` is that row's primary key, so ordering survives an API restart.
-- The outbox stores the serialized frame and keeps the most recent 2000 rows, so a replay is history rather than a fresh snapshot of current rows.
+- **Durable outbox.** Each data frame is written as an `Outbox` row and committed *before* broadcast, and `seq` is that row's primary key, so ordering survives an API restart. It stores the serialized frame and keeps the most recent 2000 rows, so a replay is history rather than a fresh snapshot of current rows.
 - **Resume.** The client connects to `/ws?since=<seq>`; the first frame is always `hello`.
 
 | `hello` says | Client does |
@@ -104,6 +100,7 @@ The failure this design prevents: a dashboard that has quietly lost its connecti
 
 - `resume: false` is returned when `since` is absent, negative, ahead of the server, or older than the retained window. The client ignores any frame whose `seq` is not greater than the last it applied, so a replayed frame is idempotent.
 - **Backpressure.** Each client has a bounded 256-frame queue drained by its own writer task. On overflow the server drops that client's backlog, sends `resync_required`, and keeps the socket open.
+- **A socket must not hold a database connection.** The engine's pool is 5 connections plus 10 overflow, shared with every REST request. A handler that kept its request-scoped session for the life of the browser tab would let the 15th open dashboard take the last connection and stall the whole API, not just the websockets, so `server/main.py` reads the replay frames out of the rows and closes the session before the socket goes live.
 
 | `type` | `payload` |
 | --- | --- |
@@ -122,9 +119,7 @@ The failure this design prevents: a dashboard that has quietly lost its connecti
 
 ## 7. Call and case lifecycle
 
-`Call.status` is the coarse lifecycle; `phase` is what staff actually watch.
-
-Call phase progression, driven by Emma.
+Call phase, driven by Emma, is what staff watch; `Call.status` is the coarse lifecycle behind it.
 
 ```mermaid
 stateDiagram-v2
@@ -148,18 +143,16 @@ stateDiagram-v2
   resolved --> [*]
 ```
 
-- `Call.status` is only `active` or `completed`, and completing always forces `phase = ended` in the backend, so a crash cannot leave a call looking live.
-- *When* a case reached `resolved` lives only in the audit log; `updated_at` moves for any edit and cannot date a fix.
+- `Call.status` is only `active` or `completed`, and completing always forces `phase = ended` in the backend, so a crash cannot leave a call looking live. *When* a case reached `resolved` lives only in the audit log; `updated_at` moves for any edit and cannot date a fix.
 
 ## 8. Location resolution
 
 The caller's words are kept, and the coordinates are best effort.
 
 - Geocoding is **OpenStreetMap Nominatim**, bounded to Berkeley with `countrycodes=us` and a `viewbox` with `bounded=1`. A bare street or intersection gets `, Berkeley, CA` appended first.
-- It runs **off the request path** as a background task, so a tool call never blocks on the network, and results are cached by normalized query text.
+- It runs **off the request path** as a background task, so a tool call never blocks on the network. Lookups are held to one a second and cached in process by normalized query text.
 - The result is written through `store.py` like any other change, arriving as `case.updated` with the location fields in `changed`.
-- `location_precision` is the honest part: `exact` for a house number or intersection, `approximate` for something vague that still resolves to a point, `unresolved` when nothing did.
-- Failure is never visible to the caller: keep the text, set `unresolved`, log it, move on.
+- `location_precision` is the honest part, and comes from what Nominatim says it matched: `exact` for a house number or intersection, `approximate` for something vaguer that still resolves, `unresolved` when nothing did. Failure is never visible to the caller - keep the text, mark it `unresolved`, log it, move on - and `EFFIGOV_GEOCODE=0` disables the network call entirely.
 
 ## 9. What staff see
 
@@ -168,31 +161,39 @@ Three surfaces, all driven by one websocket client (`web/src/lib/useLiveEvents.t
 | Surface | Panels |
 | --- | --- |
 | Dashboard | Four stat tiles with sparklines, recent cases, call volume, cases by type, needs attention |
-| Call console | Call controls, extracted information, current call, live transcript, case activity |
-| Case detail | Progress stepper, case summary, AI collected details, resident, incident location map, activity timeline |
+| Call console | Three columns of fixed height: the case activity timeline, one merged call panel (caller, the agent's read, the line, the controls), then the live transcript and extracted information |
+| Case detail | Overview, Transcript, Details, Activity, Notes. Overview carries a derived progress stepper, the case summary, AI collected details, the resident, and the incident location |
 
-- Tiles and charts come from `/api/stats/*`, which aggregates existing rows with nothing cached or precomputed.
-- Rows change contents live but change *order* only when nobody is reading: a reorder is withheld while the pointer or focus is in the table, and surfaced as a pill.
-- A field with a staff PATCH in flight is locally owned until it resolves, so the websocket echo of the pre-edit value cannot undo the edit.
+- The incident location map is an OpenStreetMap iframe with a bounding box and a marker - no key, no account, no map library - and has three honest states: a pin, still locating, no match.
+- Rows change contents live but change *order* only when nobody is reading: a reorder is withheld while the pointer or focus is in the table, and surfaced as a pill. A field with a staff PATCH in flight is locally owned until it resolves, so the websocket echo of the pre-edit value cannot undo the edit.
 
-## 10. Honest limitations
+## 10. The analytics API
 
-- **Interim transcription is one-sided.** The installed `livekit-agents` exposes interim transcription for the caller and none for the agent's own speech, so the caller's words stream mid-utterance while Emma's arrive one utterance at a time.
+`server/analytics.py` is read-only, derives every number from rows that already exist, and caches or precomputes nothing.
+
+| Endpoint | Returns |
+| --- | --- |
+| `GET /api/stats/summary` | The four tiles - open cases, live calls, average resolution days, escalations - each as `{value, change, series}` with a dense 7-day sparkline, plus `resolved_sample` |
+| `GET /api/stats/call-volume?days=7` | Calls per day over the window (1-90), the previous window's total, and the percent change |
+| `GET /api/stats/cases-by-type` | Case mix as slices, top 5 named and the tail folded into `Other` alongside the unclassified |
+| `GET /api/stats/needs-attention` | Three actionable queues: high priority with no department, escalated and still open, missing a location |
+
+- **A resolution is dated from the audit log,** from the *first* `case.updated` / `status` / `resolved` event. A case with no such event is excluded from the average rather than guessed at.
+- **Series are dense.** A day with no activity is a zero bucket, because a sparkline drawn from sparse data closes the gaps and makes a quiet week look busy.
+- The dashboard reads all four endpoints independently, so one failing blanks one panel rather than the page.
+
+## 11. Honest limitations
+
+- **Interim transcription is one-sided.** The installed `livekit-agents` exposes interim transcription for the caller and none for the agent's own speech, so the caller's words stream mid-utterance while Emma's arrive one utterance at a time, as a single delta immediately before the final turn.
 - **Deduplication is lexical.** Geocoding informs the map, not the merge, so "the big hole by the Safeway" still misses; merging on a radius is the obvious upgrade.
-- **One process, no broker.** The outbox makes ordering durable, but fan-out is in-process; under multiple workers only the notify path has to change.
-- **SQLite, no migration tool.** `init_db` runs an additive `ALTER TABLE ADD COLUMN` pass with backfills, which keeps a local database working but cannot rename or drop anything.
+- **Three call fields are defaults, not observations.** `caller_city`, `line_type`, and `language` are column defaults nothing ever writes, and the console renders them as if they were detected.
+- **The analytics scan the tables.** Every `/api/stats` read loads the cases, calls, or events it needs; correct at 311 volumes, and the response shapes are what a materialized version would have to keep.
+- **One process, one file, no broker.** Fan-out is in-process, so under multiple workers the notify path has to change, and `init_db` runs an additive `ALTER TABLE ADD COLUMN` pass that keeps a local SQLite database working without being able to rename or drop anything.
 - **No auth on the API or the dashboard.** Transcripts and callback numbers are PII stored in the clear.
 - **Escalation is a state change, not a dispatch,** and a retried tool call files a second report because there are no idempotency keys.
 
-## 11. Testing
+## 12. Testing
 
-Tested where there is real policy or a real invariant.
+What is covered, what was verified by hand, and what was not tested at all is in [TESTS.md](TESTS.md).
 
-| Suite | Covers |
-| --- | --- |
-| `tests/test_triage.py` | Routing, location matching, the dedupe guards, the priority formula and bands |
-| `tests/test_api.py` | Deduplication end to end, corroboration, re-routing, escalation, an audit row per change |
-| `tests/test_live.py` | Monotonic gap-free `seq`, replay, `resume: false`, slow-consumer resync, `changed` accuracy |
-| `tests/test_analytics.py` | The `/api/stats` shapes, including resolution time read from the audit log |
-
-- Not tested: the model's conversational behaviour and the browser UI. Prompt behaviour is not a stable assertion; the UI is verified by driving the real dashboard with `scripts/demo_rehearsal.py`. Next in production: Postgres with real migrations, merging on a geocoded radius, idempotency keys on report filing, and auth with a review queue behind the escalation flag.
+- The policy in section 3, the write path in section 4, the protocol in section 6, and the analytics in section 10 each have a suite. The model's conversation and the browser UI do not, there are no frontend tests, and nothing runs on push.

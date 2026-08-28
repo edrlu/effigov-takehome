@@ -18,6 +18,65 @@ erDiagram
   Call ||--o{ Turn : "transcribed as"
 ```
 
+The columns that carry the domain, table by table.
+Location lives on the case, caller identity on the call, and ordering on the turn.
+
+```mermaid
+erDiagram
+  Case {
+    string case_number UK
+    string issue_type "null until confident"
+    float issue_type_confidence
+    string department
+    string location "what dedupe compares"
+    string location_text "caller words"
+    string location_formatted "from Nominatim"
+    float latitude
+    float longitude
+    string location_precision "exact approximate unresolved"
+    string location_detail "where on the street"
+    string status
+    string priority
+    int priority_score
+    int report_count
+    bool escalated
+  }
+  Report {
+    int case_id FK
+    int call_id FK
+    string reporter_name
+    string reporter_phone "digits only"
+    string description
+  }
+  Case ||--o{ Report : "one per resident"
+```
+
+```mermaid
+erDiagram
+  Call {
+    string room
+    int case_id FK
+    int report_id "not a declared FK"
+    string status "active completed"
+    string phase "greeting to ended"
+    string caller_name
+    string caller_phone "digits only"
+    string caller_city "default only"
+    string line_type "default only"
+    string language "default only"
+    string sentiment
+    string activity_line "one present tense line"
+    string summary
+  }
+  Turn {
+    int call_id FK
+    int turn_seq "per call from 1"
+    string role "caller or agent"
+    string text "final utterance only"
+  }
+  Call ||--o{ Turn : "transcribed as"
+```
+
 The audit log points at both, and either side may be null.
 
 ```mermaid
@@ -57,7 +116,7 @@ Three writers, and every column below is tagged with one of them.
 | `CallStatus` | `active`, `completed` | `call.status` |
 | `CallPhase` | `greeting`, `gathering`, `filed`, `wrapping`, `ended` | `call.phase` |
 | `Sentiment` | `positive`, `neutral`, `negative` | `call.sentiment` |
-| precision | `exact`, `approximate`, `unresolved` | `case.location_precision`, a plain string |
+| `LocationPrecision` | `exact`, `approximate`, `unresolved` | `case.location_precision` |
 
 - Enums are stored as their string values, so the database file stays readable.
 - `Department.parks` is reachable only by reassignment: no issue type routes to it.
@@ -78,7 +137,7 @@ One civic incident, no matter how many people report it.
 | `location_formatted` | str, null | system | Normalized address returned by Nominatim |
 | `latitude` | float, null | system | Geocoded, Berkeley-bounded |
 | `longitude` | float, null | system | Geocoded, Berkeley-bounded |
-| `location_precision` | str, null | system | `exact`, `approximate`, or `unresolved` |
+| `location_precision` | enum | system | Defaults `unresolved`. How far the coordinates can be trusted |
 | `location_detail` | str, null | agent | On-site note, such as "Right lane near crosswalk, curb side." |
 | `description` | str, null | agent, staff | The canonical description of the incident |
 | `status` | enum | agent, staff | Defaults `new`. The agent sets `in_progress` when it closes out |
@@ -128,9 +187,9 @@ One voice session. Exists from the moment the LiveKit room opens.
 | `caller_phone` | str, null | agent | Digits |
 | `summary` | str, null | system | The same summary written to the case at hangup |
 | `caller_name` | str, null | agent | On the call itself, so a console can name the caller before a report exists |
-| `caller_city` | str, null | system | Defaults `Berkeley, CA` |
-| `line_type` | str, null | system | Defaults `Mobile` |
-| `language` | str, null | system | Defaults `English` |
+| `caller_city` | str, null | system | Column default `Berkeley, CA`. Nothing writes it |
+| `line_type` | str, null | system | Column default `Mobile`. Nothing writes it |
+| `language` | str, null | system | Column default `English`. Nothing writes it |
 | `sentiment` | enum | agent | How the caller sounds right now. Defaults `neutral` |
 | `activity_line` | str, null | agent | One present-tense sentence, under about 60 characters |
 | `started_at` | datetime | system | Room open |
@@ -138,7 +197,8 @@ One voice session. Exists from the moment the LiveKit room opens.
 
 - `status` answers "is this call still up?"; `phase` answers "what is the agent doing right now?", which is the question a supervisor has.
 - Setting `status = completed` always forces `phase = ended` in the backend, so a crash between the two cannot leave a call looking live.
-- `caller_phone_display` appears on the wire but is not a column: it is formatted during serialization.
+- `caller_phone_display` appears on the wire but is not a column: `store.serialize` formats it from `caller_phone`.
+- `caller_city`, `line_type`, and `language` are **defaults nothing ever writes.** The call console renders them, so they read as observations they are not. Detecting them is the honest fix; dropping the fields is the honest alternative.
 
 ## `turn`
 
@@ -209,7 +269,7 @@ Every data frame the server has broadcast, in the order it broadcast them.
 
 | Table | Indexed | Why |
 | --- | --- | --- |
-| `case` | `case_number` (unique), `issue_type`, `department`, `status`, `priority_score` | Lookup by number, plus the dashboard's filters and sort |
+| `case` | `case_number` (unique), `issue_type`, `department`, `status`, `priority_score`, `escalated`, `location_precision` | Lookup by number, plus the dashboard's filters, sort, and the needs-attention queues |
 | `report` | `case_id`, `call_id`, `reporter_phone` | Reports for a case, and lookup by a caller's number |
 | `call` | `room`, `case_id`, `report_id`, `status`, `phase`, `sentiment` | The active-calls query and the live console |
 | `turn` | `call_id`, `turn_seq`, unique `(call_id, turn_seq)` | Ordered transcript, and one row per sequence number |
@@ -220,7 +280,7 @@ Every data frame the server has broadcast, in the order it broadcast them.
 
 | Table | Written by |
 | --- | --- |
-| `case` | `store.create_case`, `store.update_case`, `store.escalate`, `store.append_note`, `store.file_report`, the geocode callback |
+| `case` | `store.create_case`, `store.update_case`, `store.escalate`, `store.append_note`, `store.file_report`, `store.apply_geocode` |
 | `report` | `store.file_report`, `store.update_report` |
 | `call` | `store.start_call`, `store.update_call`, `store.set_phase` |
 | `turn` | `store.add_turn` only. `store.add_interim` writes nothing |
@@ -233,6 +293,12 @@ Every data frame the server has broadcast, in the order it broadcast them.
 ## Migrations
 
 `server/db.py` lists every column added after the first release in `_ADDED_COLUMNS` and adds the missing ones in place.
+
+| Table | Columns added since the first release |
+| --- | --- |
+| `case` | `issue_type_confidence`, `location_text`, `location_formatted`, `latitude`, `longitude`, `location_precision`, `location_detail` |
+| `call` | `phase`, `caller_name`, `caller_city`, `line_type`, `language`, `sentiment`, `activity_line` |
+| `turn` | `turn_seq` |
 
 - Additive only. SQLite can only `ADD COLUMN`, so each entry is nullable or carries a literal default.
 - Backfills give old rows a value that is true of them: a call that already hung up gets `phase = ended`, and old turns recover `turn_seq` from their insertion order.
