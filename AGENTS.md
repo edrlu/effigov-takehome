@@ -17,6 +17,15 @@ For the same reason `_log` snapshots each `Event` with `serialize` at write time
 **A call is linked to its case through the report, not always through `Call.case_id`.**
 `GET /api/cases/{id}/calls` returns nothing for a call whose `case_id` was never backfilled, even though the call produced a report on that case. Anything that needs the transcript or the call duration for a case has to fall back to the newest report's `call_id`; `web/src/components/case/CasePage.tsx` does exactly that.
 
+**A websocket handler must not hold a request-scoped session.**
+`Depends(get_session)` lives as long as the connection, and the resume-window read opens a transaction, so the session keeps a pooled connection for the life of the socket.
+The engine's pool is 5 + 10 overflow, so the 15th open dashboard takes the last one and *every REST request* then blocks 30s and fails - the whole API, not just the websockets.
+`server/main.py` reads the replay frames out of the rows and calls `session.close()` before the socket goes live; keep it that way.
+
+**`$!` after `cmd | sed &` is the sed, not the service.**
+`run.sh` colours each service through a pipe, so recording `$!` would collect four colourisers and leave every server holding its port on Ctrl-C, and the next `./run.sh` fails on "address already in use".
+Each service is started through a process substitution - `cmd > >(sed ...) 2>&1 &` - so `$!` is the thing `cleanup` has to kill. Adding a fifth service means doing the same.
+
 **Frames a websocket test asserts on must be fenced, not slept on.**
 `{"type":"ping"}` is queued through the same per-client writer as data frames, so a `pong` can only arrive after everything published before it. `tests/test_live.py::read_until_quiet` uses that; a bare `receive_json()` with nothing pending blocks forever and hangs the suite.
 
@@ -24,6 +33,8 @@ For the same reason `_log` snapshots each `Event` with `serialize` at write time
 `Case.updated_at` moves for any edit, so it cannot date a fix.
 The transition is recorded as an `Event` with `kind="case.updated"`, `field="status"`, `new_value="resolved"`, and `server/analytics.py` reads exactly that shape.
 Anything that writes a resolution outside `store.update_case` - `scripts/seed.py` does - has to write that event too, or the case silently drops out of the resolution-time average.
+The same obligation covers the rest of a case's story: `scripts/seed.py` writes its backfilled cases straight to the database, so it also has to write the `Report` its `report_count` counts and the `case.created` / `case.routed` / `report.filed` rows the API would have written.
+Skip them and the API still looks correct while the case page shows no reporter and an audit timeline that opens mid-story.
 
 **A panel that follows its own tail must ignore its own scroll events.**
 Setting `scrollTop` fires a `scroll` event a frame later, by which time more rows may have landed and pushed the bottom further away.
