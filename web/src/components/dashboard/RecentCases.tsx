@@ -3,9 +3,12 @@
 /**
  * Row two: the full-width case table.
  *
- * Everything here comes from `GET /api/cases` plus, for the rows on screen,
- * `GET /api/cases/{id}/reports` for the resident's name. The filter tabs are
- * built from the four statuses this system actually has.
+ * Everything here comes from `GET /api/cases` alone. The queue is a list of
+ * *incidents*, so the corroboration column says how many separate residents
+ * reported each one rather than naming the first of them - a single name would
+ * read as the case belonging to one caller, and it cost a per-row fetch of
+ * that case's reports to show. The filter tabs are built from the four
+ * statuses this system actually has.
  */
 
 import { useMemo, useState } from "react";
@@ -13,9 +16,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Card, CardHeader, PanelEmpty, RevealFooter, Shimmer } from "./ui";
 import { DocumentIcon } from "./icons";
-import { useResidents } from "./useResidents";
-import { departmentLabel, issueLabel, PRIORITY_LABEL, STATUS_LABEL } from "@/lib/labels";
-import { CASE_STATUSES, type Case, type CaseStatus, type Priority } from "@/lib/types";
+import { departmentLabel, issueLabel, PRIORITY_LABEL, reportersCount, STATUS_LABEL } from "@/lib/labels";
+import { CASE_STATUSES, reporterCount, type Case, type CaseStatus, type Priority } from "@/lib/types";
 import { parseServerTime, relativeTime } from "@/lib/time";
 
 type Filter = CaseStatus | "all";
@@ -43,15 +45,12 @@ export function RecentCases({
   loading,
   error,
   fieldFlash,
-  reportsToken,
   now,
 }: {
   cases: Case[];
   loading: boolean;
   error: string | null;
   fieldFlash: (id: number, field: string) => boolean;
-  /** Bumped when a report lands, so cached resident names are re-read. */
-  reportsToken: number;
   now: number;
 }) {
   const router = useRouter();
@@ -73,11 +72,6 @@ export function RecentCases({
   );
 
   const rows = expanded ? matching : matching.slice(0, RECENT_ROWS);
-  // Stable identity for the row ids, so the resident lookup only refires when
-  // the visible set actually changes.
-  const idKey = rows.map((item) => item.id).join(",");
-  const ids = useMemo(() => (idKey === "" ? [] : idKey.split(",").map(Number)), [idKey]);
-  const residents = useResidents(ids, reportsToken);
 
   return (
     <Card>
@@ -139,7 +133,7 @@ export function RecentCases({
             <thead>
               <tr className="border-y border-hairline-soft bg-inset">
                 <th className={`${HEAD} w-[15%]`}>Case ID</th>
-                <th className={`${HEAD} w-[16%]`}>Resident</th>
+                <th className={`${HEAD} w-[16%]`}>Reporters</th>
                 <th className={`${HEAD} w-[16%]`}>Issue Type</th>
                 <th className={`${HEAD} w-[16%]`}>Department</th>
                 <th className={`${HEAD} w-[11%]`}>Priority</th>
@@ -150,7 +144,7 @@ export function RecentCases({
             <tbody>
               {rows.map((item) => {
                 const lit = (field: string) => (fieldFlash(item.id, field) ? "flash" : "");
-                const name = residents.name(item.id);
+                const reporters = reporterCount(item);
                 return (
                   <tr
                     key={item.id}
@@ -170,15 +164,15 @@ export function RecentCases({
                       </Link>
                     </td>
 
+                    {/* People, not calls: the backend keys one report per
+                        phone number, so this cannot be inflated by re-dials. */}
                     <td className={`${CELL} text-[13px] text-slate-700 ${lit("report_count")}`}>
-                      {name ? (
-                        <span className="truncate">{name}</span>
-                      ) : residents.resolved(item.id) ? (
-                        <span className="text-slate-300" title="No name captured on this case's reports">
-                          -
-                        </span>
+                      {reporters > 0 ? (
+                        <span className="truncate">{reportersCount(reporters)}</span>
                       ) : (
-                        <Shimmer className="h-3 w-20" />
+                        <span className="text-slate-300" title="No resident report on file yet">
+                          None yet
+                        </span>
                       )}
                     </td>
 

@@ -153,9 +153,13 @@ export function addressLines(formatted: string | null): { street: string; region
     .filter(Boolean);
   if (parts.length <= 1) return { street: formatted, region: null };
 
-  const street = parts[0];
-  const rest = parts
-    .slice(1)
+  // Nominatim emits the house number as its own comma part, so taking the
+  // first part alone leaves the card headlined "2210". Rejoin the number with
+  // the street it belongs to.
+  const numbered = /^\d+[a-z]?$/i.test(parts[0]) && parts.length > 1;
+  const street = numbered ? `${parts[0]} ${parts[1]}` : parts[0];
+  const tail = parts.slice(numbered ? 2 : 1);
+  const rest = tail
     .filter((part) => !/^(usa|united states(\s+of\s+america)?)$/i.test(part))
     .filter((part) => !/^\d{5}(-\d{4})?$/.test(part))
     .filter((part) => !/\bcounty\b/i.test(part))

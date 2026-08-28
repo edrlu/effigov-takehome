@@ -15,6 +15,7 @@
  */
 
 import { ConnectionState } from "livekit-client";
+import Link from "next/link";
 import type { ReactNode } from "react";
 import { CardHeading, ConsoleCard, Pill } from "@/components/call/surface";
 import {
@@ -89,9 +90,19 @@ export function CallPanel({ call, kase, report }: { call: Call | null; kase: Cas
       <CardHeading
         title="Current Call"
         action={
-          <span className="truncate text-right text-[12px] whitespace-nowrap text-slate-400">
-            {kase ? `Case ${kase.case_number}` : "Case pending"}
-          </span>
+          // Call -> Report -> Case. Once a report exists the link carries it,
+          // so a supervisor lands on this caller's own account rather than
+          // having to find them among the case's reporters.
+          kase ? (
+            <Link
+              href={report ? `/cases/${kase.id}?report=${report.id}` : `/cases/${kase.id}`}
+              className="truncate text-right text-[12px] font-medium whitespace-nowrap text-blue-600 transition-colors hover:text-blue-700"
+            >
+              Case {kase.case_number}
+            </Link>
+          ) : (
+            <span className="truncate text-right text-[12px] whitespace-nowrap text-slate-400">Case pending</span>
+          )
         }
       />
 

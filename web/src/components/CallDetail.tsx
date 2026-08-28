@@ -6,17 +6,26 @@ import { PhaseTrack } from "@/components/PhaseTrack";
 import { Transcript } from "@/components/Transcript";
 import { ErrorNote, Skeleton } from "@/components/ui";
 import { api } from "@/lib/api";
-import { callPhase, type Call, type Case } from "@/lib/types";
+import { callPhase, isSealed, type Call, type Case, type Report } from "@/lib/types";
 import { formatDateTime, formatDuration, relativeTime } from "@/lib/time";
 import { useLiveEvents } from "@/lib/useLiveEvents";
 import { useNow } from "@/lib/useNow";
 
-/** A single voice session: live transcript plus the case it produced. */
+/**
+ * A single voice session: live transcript, the report it produced, and the
+ * case that report belongs to.
+ *
+ * Call -> Report -> Case, and both links are reachable from here. The page is
+ * read-only by construction: a completed call is sealed - the backend answers
+ * 409 to any write against one - so nothing here offers an edit control, and
+ * the sealed note says where a correction goes instead.
+ */
 export function CallDetail({ callId }: { callId: number }) {
   const [call, setCall] = useState<Call | null>(null);
   const [linkedCase, setLinkedCase] = useState<Case | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [report, setReport] = useState<Report | null>(null);
   const now = useNow(1000);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setError(null);
@@ -31,10 +40,12 @@ export function CallDetail({ callId }: { callId: number }) {
   }, [load]);
 
   const linkedId = call?.case_id ?? null;
+  const reportId = call?.report_id ?? null;
 
   useEffect(() => {
     if (linkedId === null) {
       setLinkedCase(null);
+      setReport(null);
       return;
     }
     let cancelled = false;
@@ -46,10 +57,27 @@ export function CallDetail({ callId }: { callId: number }) {
       .catch(() => {
         if (!cancelled) setLinkedCase(null);
       });
+    // There is no `GET /api/reports/{id}`, and a report is only ever read in
+    // the context of its case, so the case's own list is where this one is
+    // found. `report_id` is the link; `call_id` covers a row written before
+    // that column existed.
+    api
+      .caseReports(linkedId)
+      .then((rows) => {
+        if (cancelled) return;
+        const found =
+          (rows ?? []).find((row) => row.id === reportId) ??
+          (rows ?? []).find((row) => row.call_id === callId) ??
+          null;
+        setReport(found);
+      })
+      .catch(() => {
+        if (!cancelled) setReport(null);
+      });
     return () => {
       cancelled = true;
     };
-  }, [linkedId]);
+  }, [linkedId, reportId, callId]);
 
   useLiveEvents(
     {
@@ -57,7 +85,12 @@ export function CallDetail({ callId }: { callId: number }) {
         if (payload.call.id === callId) setCall(payload.call);
       },
       "report.filed": (payload) => {
-        if (payload.report.call_id === callId) setLinkedCase(payload.case);
+        if (payload.report.call_id !== callId) return;
+        setLinkedCase(payload.case);
+        setReport(payload.report);
+      },
+      "report.updated": (payload) => {
+        setReport((previous) => (previous && previous.id === payload.report.id ? payload.report : previous));
       },
       "case.updated": (payload) => {
         setLinkedCase((previous) => (previous && previous.id === payload.case.id ? payload.case : previous));
@@ -126,22 +159,59 @@ export function CallDetail({ callId }: { callId: number }) {
           <PhaseTrack phase={callPhase(call)} className="mt-2.5" />
         </div>
 
-        {linkedCase ? (
-          <Link
-            href={`/cases/${linkedCase.id}`}
-            className="flex h-8 items-center gap-2 rounded-md border border-line bg-panel px-3 text-[12px] text-ink transition-colors hover:border-line-strong"
-          >
-            <span className="font-mono">{linkedCase.case_number}</span>
-            <span className="text-faint" aria-hidden>
-              &#8594;
+        {/* Call -> Report -> Case: both hops are one click from here. */}
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {linkedCase && report ? (
+            <Link
+              href={`/cases/${linkedCase.id}?report=${report.id}`}
+              className="flex h-8 items-center gap-2 rounded-md border border-line bg-panel px-3 text-[12px] text-ink transition-colors hover:border-line-strong"
+            >
+              <span className="text-faint">Report</span>
+              <span>{report.reporter_name?.trim() || "Anonymous resident"}</span>
+            </Link>
+          ) : call.produced_report === false ? (
+            <span
+              className="flex h-8 items-center rounded-md border border-line px-3 text-[12px] text-faint"
+              title="No resident account came out of this call"
+            >
+              No report filed
             </span>
-          </Link>
-        ) : (
-          <span className="flex h-8 items-center rounded-md border border-line px-3 text-[12px] text-faint">
-            No case linked yet
-          </span>
-        )}
+          ) : null}
+
+          {linkedCase ? (
+            <Link
+              href={`/cases/${linkedCase.id}`}
+              className="flex h-8 items-center gap-2 rounded-md border border-line bg-panel px-3 text-[12px] text-ink transition-colors hover:border-line-strong"
+            >
+              <span className="font-mono">{linkedCase.case_number}</span>
+              <span className="text-faint" aria-hidden>
+                &#8594;
+              </span>
+            </Link>
+          ) : (
+            <span className="flex h-8 items-center rounded-md border border-line px-3 text-[12px] text-faint">
+              No case linked yet
+            </span>
+          )}
+        </div>
       </div>
+
+      {isSealed(call) ? (
+        <p className="rounded-lg border border-line bg-panel px-4 py-2.5 text-[12.5px] leading-5 text-faint">
+          This call has ended, so its record is sealed and nothing here can be edited. A correction goes on
+          {report && linkedCase ? (
+            <>
+              {" "}
+              <Link href={`/cases/${linkedCase.id}?report=${report.id}`} className="text-ink hover:underline">
+                the caller&rsquo;s report
+              </Link>
+              .
+            </>
+          ) : (
+            <> the caller&rsquo;s report.</>
+          )}
+        </p>
+      ) : null}
 
       {call.summary ? (
         <p className="rounded-lg border border-line bg-panel px-4 py-3 text-[13px] leading-5 text-muted">

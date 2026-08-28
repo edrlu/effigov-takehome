@@ -16,7 +16,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { formatPhone, issueLabel, PRIORITY_LABEL, STATUS_LABEL } from "@/lib/labels";
+import { issueLabel, PRIORITY_LABEL, reportersPhrase, STATUS_LABEL } from "@/lib/labels";
 import { formatDateTime, parseServerTime } from "@/lib/time";
 import type { Call, Case, CasePatch, CaseStatus, Priority, Report } from "@/lib/types";
 import { CASE_STATUSES, PRIORITIES } from "@/lib/types";
@@ -29,13 +29,19 @@ import { CaseTranscript } from "./CaseTranscript";
 import { DetailsTab } from "./DetailsTab";
 import { IncidentLocation } from "./IncidentLocation";
 import { NotesTab } from "./NotesTab";
-import { CaseSummaryCard, CollectedDetails, ResidentCard } from "./OverviewCards";
+import { CaseSummaryCard, CollectedDetails, ReportersCard } from "./OverviewCards";
+import { ReportsTab } from "./ReportsTab";
 import { GEO_FIELDS } from "@/lib/geo";
 import { caseFacts, callDuration, newestCall, progressSteps } from "./derive";
 import { Icon, type IconName } from "./icons";
 import { ErrorCard, Pill, SkeletonBar, STATUS_TONE } from "./ui";
 
-const TABS = ["Overview", "Transcript", "Details", "Activity", "Notes"] as const;
+/**
+ * Reports sit second, directly behind the Overview: they are supporting
+ * evidence a crew chief reaches for, so they must be one click away and must
+ * not be the first thing read.
+ */
+const TABS = ["Overview", "Reports", "Transcript", "Details", "Activity", "Notes"] as const;
 type Tab = (typeof TABS)[number];
 
 /** One item in the header meta row: an outline glyph and its value. */
@@ -48,14 +54,27 @@ function MetaItem({ icon, children }: { icon: IconName; children: React.ReactNod
   );
 }
 
-export function CasePage({ caseId }: { caseId: number }) {
+export function CasePage({
+  caseId,
+  /**
+   * A report to open on, from `?report=` - the link a call record uses to
+   * point at the account it produced. Resolved on the server, so this page
+   * needs no `useSearchParams` and no Suspense boundary around it.
+   */
+  focusReport = null,
+}: {
+  caseId: number;
+  focusReport?: number | null;
+}) {
   const [item, setItem] = useState<Case | null>(null);
   const [reports, setReports] = useState<Report[] | null>(null);
   const [call, setCall] = useState<Call | null>(null);
   const [callsLoading, setCallsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("Overview");
+  const [tab, setTab] = useState<Tab>(focusReport === null ? "Overview" : "Reports");
+  /** The report the reader asked to see, from the URL or from a call record. */
+  const [viewReport, setViewReport] = useState<number | null>(focusReport);
   const [editing, setEditing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [saving, setSaving] = useState<"status" | "priority" | null>(null);
@@ -119,13 +138,20 @@ export function CasePage({ caseId }: { caseId: number }) {
     [flash],
   );
 
-  const upsertReport = useCallback((report: Report, changed: string[]) => {
-    setReports((previous) => {
-      const rest = (previous ?? []).filter((row) => row.id !== report.id);
-      return [...rest, report];
-    });
-    for (const field of changed) flash(field);
-  }, [flash]);
+  const upsertReport = useCallback(
+    (report: Report, changed: string[]) => {
+      setReports((previous) => {
+        const rest = (previous ?? []).filter((row) => row.id !== report.id);
+        // Oldest first, so a report arriving live lands in the order it was
+        // filed rather than always at the end of the list.
+        return [...rest, report].sort(
+          (a, b) => parseServerTime(a.created_at).getTime() - parseServerTime(b.created_at).getTime(),
+        );
+      });
+      for (const field of changed) flash(field);
+    },
+    [flash],
+  );
 
   /** The call we are showing, so live frames for it are accepted by id too. */
   const shownCallId = useRef<number | null>(null);
@@ -179,8 +205,11 @@ export function CasePage({ caseId }: { caseId: number }) {
       },
       "report.filed": (payload) => {
         if (payload.case.id !== caseId) return;
-        applyCase(payload.case, ["report_count", "priority_score"]);
-        upsertReport(payload.report, ["reporter_name", "reporter_phone"]);
+        // A repeat is the same resident ringing back: their account was
+        // replaced and the count of *people* did not move, so highlighting it
+        // would claim corroboration that did not happen.
+        applyCase(payload.case, payload.repeat ? ["priority_score"] : ["report_count", "priority_score"]);
+        upsertReport(payload.report, ["reporter_name", "reporter_phone", "description", "location"]);
       },
       "report.updated": (payload) => {
         if (payload.case_id !== caseId) return;
@@ -261,14 +290,34 @@ export function CasePage({ caseId }: { caseId: number }) {
                 Escalated
               </Pill>
             ) : null}
+            {/* Corroboration is a headline fact about the incident, so it sits
+                with the status rather than waiting inside a card. */}
+            {facts.reporterCount > 1 ? (
+              <Pill tone="blue" className={flashed.has("report_count") ? "flash" : ""}>
+                <Icon name="users" className="h-3.5 w-3.5" />
+                {facts.reporterCount} residents
+              </Pill>
+            ) : null}
           </div>
 
+          {/* What the problem is, where, when, and how many people say so -
+              the four questions a case has to answer before anyone opens a
+              report. The reporter's own name and number are on the Reporters
+              card and the Reports tab, where the evidence belongs. */}
           <div className="mt-2.5 flex flex-wrap items-center gap-x-5 gap-y-1.5">
-            <MetaItem icon="user">{facts.residentName ?? "Name not given"}</MetaItem>
             <MetaItem icon="tag">{item.issue_type ? issueLabel(item.issue_type) : "Being classified"}</MetaItem>
+            <MetaItem icon="pin">{facts.geo.formatted ?? "No location captured"}</MetaItem>
             <MetaItem icon="calendar">{formatDateTime(item.created_at)}</MetaItem>
-            <MetaItem icon="phone">
-              {facts.residentPhone ? formatPhone(facts.residentPhone) : "No callback number"}
+            <MetaItem icon="users">
+              <button
+                type="button"
+                onClick={() => setTab("Reports")}
+                className={`rounded transition-colors hover:text-blue-700 ${
+                  flashed.has("report_count") ? "flash" : ""
+                }`}
+              >
+                {reportersPhrase(facts.reporterCount)}
+              </button>
             </MetaItem>
           </div>
         </div>
@@ -382,6 +431,11 @@ export function CasePage({ caseId }: { caseId: number }) {
             }`}
           >
             {name}
+            {name === "Reports" && facts.reporterCount > 0 ? (
+              <span className="ml-1.5 rounded-md bg-inset px-1.5 py-0.5 text-[11px] tabular-nums">
+                {facts.reporterCount}
+              </span>
+            ) : null}
           </button>
         ))}
       </nav>
@@ -406,11 +460,16 @@ export function CasePage({ caseId }: { caseId: number }) {
                 </div>
               ) : null}
               <CaseProgress steps={steps} />
-              <CaseSummaryCard item={item} duration={duration} changed={flashed} />
+              <CaseSummaryCard
+                item={item}
+                duration={duration}
+                reporterCount={facts.reporterCount}
+                changed={flashed}
+              />
               <CollectedDetails geo={facts.geo} description={facts.description} changed={flashed} />
             </div>
             <div className="flex min-w-0 flex-col gap-6">
-              <ResidentCard facts={facts} changed={flashed} />
+              <ReportersCard facts={facts} changed={flashed} onViewAll={() => setTab("Reports")} />
               <IncidentLocation
                 geo={facts.geo}
                 flashing={GEO_FIELDS.some((field) => flashed.has(field))}
@@ -420,6 +479,17 @@ export function CasePage({ caseId }: { caseId: number }) {
           </div>
         ) : null}
 
+        {tab === "Reports" ? (
+          <ReportsTab
+            item={item}
+            reports={reports}
+            count={facts.reporterCount}
+            focused={viewReport}
+            changed={flashed}
+            onPromoted={(next) => applyCase(next, ["description", "location"])}
+          />
+        ) : null}
+
         {tab === "Transcript" ? (
           <div className="max-w-[880px]">
             <CaseTranscript call={call} loading={callsLoading} />
@@ -427,7 +497,16 @@ export function CasePage({ caseId }: { caseId: number }) {
         ) : null}
 
         {tab === "Details" ? (
-          <DetailsTab item={item} facts={facts} reports={reports} duration={duration} changed={flashed} />
+          <DetailsTab
+            item={item}
+            facts={facts}
+            duration={duration}
+            changed={flashed}
+            onViewReport={(reportId) => {
+              setViewReport(reportId);
+              setTab("Reports");
+            }}
+          />
         ) : null}
 
         {tab === "Activity" ? (
