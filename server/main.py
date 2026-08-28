@@ -141,11 +141,23 @@ async def list_cases(
 
 @app.get("/api/cases/lookup")
 async def lookup_case(identifier: str, session: Session = Depends(get_session)):
-    """Used by the voice agent when a caller asks about an existing request."""
+    """Used by the voice agent when a caller asks about an existing request.
+
+    ``reporter`` carries the name on file and the *last four digits* of their
+    number, and no more of it than that. Whoever has a case number can ask
+    about the case, so the agent has to verify the caller before treating them
+    as its reporter - and it can only do that against something it is allowed
+    to say aloud. Handing it the whole number would put it one prompt away from
+    reading a stranger's phone number to an unverified caller, so the payload
+    simply does not contain one.
+    """
     case = store.find_case(session, identifier)
     if not case:
         raise HTTPException(404, "case not found")
-    return store.serialize(case)
+    return {
+        **store.serialize(case),
+        "reporter": store.reporter_on_file(session, case, identifier),
+    }
 
 
 @app.get("/api/cases/{case_id}")
@@ -225,6 +237,7 @@ async def file_report(
     actor: str = "voice_agent",
     session: Session = Depends(get_session),
 ):
+    pinned = _case_or_404(session, body.case_id) if body.case_id is not None else None
     report, case, merged = store.file_report(
         session,
         issue_type=body.issue_type,
@@ -234,6 +247,7 @@ async def file_report(
         reporter_name=body.reporter_name,
         reporter_phone=body.reporter_phone,
         call_id=body.call_id,
+        case=pinned,
         actor=actor,
     )
     geocode.schedule(background, case)

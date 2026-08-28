@@ -44,6 +44,7 @@ from livekit.agents import (
     function_tool,
 )
 from livekit.plugins import openai
+from openai.types.realtime import AudioTranscription
 
 from agent.backend import CaseAPI
 
@@ -78,6 +79,14 @@ ACTIVITY_BY_PHASE = {
 # The console renders this on one line beside the phase badge.
 ACTIVITY_MAX = 60
 
+# The realtime model auto-detects the transcription language when it is not
+# told one, and it guesses on short or accented audio: a caller saying "uh,
+# Thomas Lu" came back as Korean and landed in the transcript that way. This
+# is an English-language city line, so the language is pinned rather than
+# inferred per utterance. The model is the plugin's own default for this
+# version; only the language is being changed.
+TRANSCRIPTION = AudioTranscription(model="gpt-4o-mini-transcribe", language="en")
+
 
 def short_activity(text: str) -> str:
     """Trim an activity line to something that fits on the console's one line."""
@@ -105,10 +114,32 @@ Your job is one of two things.
    the end, digit by digit.
 
 2. Checking on an existing report. Ask for the case number or the phone number
-   they used, call `look_up_request`, then give the status in one sentence. If
-   they add new information, call `add_case_note`.
+   they used and call `look_up_request`. You may give the status straight away:
+   that is public to anyone who has the case number. But you do not yet know
+   who you are talking to. Anyone can read a case number off a neighbour's
+   letter, and the person who filed it is a different resident with a name and
+   a phone number on file.
+
+   So before you treat the caller as that reporter, verify them:
+
+   a. Ask whether their callback number ends in the four digits the lookup gave
+      you: "does your callback number end in 0188?". Those four digits are the
+      only part of the number you have and the only part you may ever say.
+   b. If they confirm, ask whether you are speaking with the name on file. Do
+      not say that name before the digits check passes.
+   c. Call `confirm_caller_identity` with what they told you.
+
+   If they are not that person - wrong digits, wrong name, or they say no -
+   they are a NEW reporter on an existing incident, which is exactly what the
+   city wants to record. Take their own name and callback number and call
+   `add_reporter_to_case`. Their report joins that case, the incident gains
+   corroboration, and the city can call *them* back.
 
 Rules:
+- Never say a stored phone number out loud. You are given the last four digits
+  of a reporter's number and nothing more, on purpose. Never guess, spell out,
+  or confirm the rest of it, and never repeat a number back to a caller who has
+  not been verified.
 - Confirm phone numbers and locations by repeating them back before you save.
 - Once you have the street address, ask one more question: whereabouts on the
   street the problem actually is. Save the answer as `location_detail` on
@@ -152,6 +183,13 @@ class CallState:
     sentiment: str = "neutral"
     caller_name: str | None = None
     collected: dict[str, str] = field(default_factory=dict)
+    # Set by ``look_up_request``. The name on file for the case the caller
+    # named, and the last four digits of that reporter's number - the only part
+    # of it the agent is ever given. ``identity_verified`` stays False until
+    # the caller has matched both, and gates everything that would treat them
+    # as that reporter.
+    on_file: dict[str, str | None] | None = None
+    identity_verified: bool = False
     # Whether ``set_status`` was called during this call. Hangup parks a case
     # the agent never ruled on; a case it *did* rule on keeps that ruling.
     status_set: bool = False
@@ -327,6 +365,19 @@ class IntakeAgent(Agent):
         if state.case_id is None:
             return "Nothing is open yet. Call file_report first."
 
+        # A case reached through look_up_request has no report of this caller's
+        # on it, so there is nothing here to write their name or number onto.
+        # Saying so beats accepting them and dropping them on the floor - and
+        # writing them onto the reporter already on file would overwrite a
+        # resident's details with a stranger's.
+        if state.report_id is None and (caller_name or phone):
+            return (
+                "This caller has no report on this case yet, so their name and number "
+                "have nowhere to go. If they are the reporter on file, their details are "
+                "already recorded. If they are not, call add_reporter_to_case with their "
+                "own name and number instead."
+            )
+
         if phone:
             phone = "".join(ch for ch in phone if ch.isdigit())
 
@@ -367,6 +418,11 @@ class IntakeAgent(Agent):
     async def look_up_request(self, ctx: RunContext[CallState], identifier: str) -> str:
         """Find an existing case by case number or by the caller's phone number.
 
+        Finding the case does NOT tell you who is on the line. The status is
+        safe to give out, but the caller is not the reporter until you have
+        verified them the way this tool's answer tells you to, and until then
+        you must not treat anything on file as theirs.
+
         Args:
             identifier: A case number like SR-123456, or a ten digit phone number.
         """
@@ -377,16 +433,125 @@ class IntakeAgent(Agent):
 
         state.case_id = case["id"]
         state.case_number = case["case_number"]
+        state.on_file = case.get("reporter")
+        state.identity_verified = False
         if state.call_id is not None:
             await state.api.update_call(state.call_id, case_id=case["id"])
 
         others = case["report_count"] - 1
         corroboration = f", reported by {others} other resident(s)" if others > 0 else ""
-        return (
+        found = (
             f"Found {case['case_number']}: {case.get('issue_type') or 'unclassified'} at "
             f"{case.get('location') or 'an unrecorded location'}, status {case['status']}, "
             f"priority {case['priority']}, with {case['department'].replace('_', ' ')}"
             f"{corroboration}. Opened {case['created_at'][:10]}."
+        )
+
+        on_file = state.on_file or {}
+        last4, name = on_file.get("phone_last4"), on_file.get("name")
+        if not last4 and not name:
+            return (
+                f"{found} Nobody left contact details on this case, so there is nothing "
+                f"to verify against. Give the status, then offer to add the caller as a "
+                f"reporter: take their name and callback number and call "
+                f"add_reporter_to_case."
+            )
+        if not last4:
+            return (
+                f"{found} The reporter on file is {name}, with no number on file. Give "
+                f"the status, then ask whether you are speaking with {name}. Whatever "
+                f"they say, call confirm_caller_identity."
+            )
+        return (
+            f"{found} Now verify the caller before treating them as the reporter. Ask "
+            f"exactly this shape of question: \"does your callback number end in "
+            f"{last4}?\". Those four digits are the only part of the number you have, "
+            f"and the only part you may say. If they confirm, ask whether you are "
+            f"speaking with {name or 'the name on file'} - not before. Then call "
+            f"confirm_caller_identity with the answer."
+        )
+
+    @function_tool
+    async def confirm_caller_identity(
+        self, ctx: RunContext[CallState], is_reporter_on_file: bool
+    ) -> str:
+        """Record whether the caller turned out to be the reporter on file.
+
+        Call this after you have asked about the last four digits and, if those
+        matched, about the name. Answer honestly: a caller who hesitated, gave
+        different digits, or gave a different name is not that person, and
+        saying they are hands one resident another resident's case.
+
+        Args:
+            is_reporter_on_file: True only when the caller confirmed BOTH the
+                last four digits and the name on file. False for anything else,
+                including a caller who declined to answer.
+        """
+        state = ctx.userdata
+        if state.case_id is None:
+            return "Look a case up first."
+
+        state.identity_verified = is_reporter_on_file
+        if not is_reporter_on_file:
+            return (
+                f"Not the reporter on file. They are a new reporter on {state.case_number}, "
+                f"which is a normal thing to be - a second resident about the same problem. "
+                f"Do not repeat anything on file back to them. Take their own name and "
+                f"callback number and call add_reporter_to_case."
+            )
+
+        name = (state.on_file or {}).get("name")
+        if name:
+            await state.set_caller_name(name)
+        return (
+            f"Verified as the reporter on {state.case_number}. You may discuss their case "
+            f"and add anything new with add_case_note."
+        )
+
+    @function_tool
+    async def add_reporter_to_case(
+        self,
+        ctx: RunContext[CallState],
+        caller_name: str,
+        phone: str,
+        description: str | None = None,
+    ) -> str:
+        """File this caller's own report against the case they asked about.
+
+        For a caller who is not the reporter on file. The city tracks one case
+        per problem and one report per resident, so this adds their account to
+        the incident rather than opening a duplicate: the case gains
+        corroboration and the city gets a way to call this caller back.
+
+        Args:
+            caller_name: This caller's own full name, as they said it.
+            phone: This caller's own callback number, digits only.
+            description: What they are seeing now, in their words, if it adds
+                anything to what the case already says.
+        """
+        state = ctx.userdata
+        if state.case_id is None:
+            return "Look a case up first, or take a new report with file_report."
+
+        digits = "".join(ch for ch in phone if ch.isdigit())
+        result = await state.api.file_report(
+            case_id=state.case_id,
+            reporter_name=caller_name,
+            reporter_phone=digits,
+            description=description,
+            call_id=state.call_id,
+        )
+        case, report = result["case"], result["report"]
+        state.report_id = report["id"]
+        await state.set_caller_name(caller_name)
+        if state.call_id is not None:
+            await state.api.update_call(state.call_id, report_id=report["id"])
+
+        logger.info("added reporter %s to case %s", report["id"], state.case_number)
+        return (
+            f"Added them as a reporter on {case['case_number']}, which now has "
+            f"{case['report_count']} reports. Tell the caller the city already knows about "
+            f"this one, that their report is now on it, and give them that case number."
         )
 
     @function_tool
@@ -524,7 +689,10 @@ async def entrypoint(ctx: JobContext) -> None:
     pending: set[asyncio.Task] = set()
     session = AgentSession[CallState](
         userdata=state,
-        llm=openai.realtime.RealtimeModel(voice="marin"),
+        llm=openai.realtime.RealtimeModel(
+            voice="marin",
+            input_audio_transcription=TRANSCRIPTION,
+        ),
     )
 
     def _spawn(coro) -> None:

@@ -62,6 +62,9 @@ class ReportCreate(BaseModel):
     reporter_name: str | None = None
     reporter_phone: str | None = None
     call_id: int | None = None
+    # Set when the caller named the case themselves. The report is pinned to it
+    # instead of going back through the duplicate search - see ``file_report``.
+    case_id: int | None = None
 
 
 class ReportUpdate(BaseModel):

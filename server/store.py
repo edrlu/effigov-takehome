@@ -517,6 +517,53 @@ def find_case(session: Session, identifier: str) -> Case | None:
     return session.get(Case, report.case_id) if report else None
 
 
+def phone_last4(raw: str | None) -> str | None:
+    """The last four digits of a stored number, or ``None`` if there are not four."""
+    digits = "".join(ch for ch in (raw or "") if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    return digits[-4:] if len(digits) >= 4 else None
+
+
+def reporter_on_file(
+    session: Session, case: Case, identifier: str | None = None
+) -> dict[str, str | None] | None:
+    """Who a case is attributed to, in the only form it is safe to say out loud.
+
+    Anyone who has a case number can ask about a case, so the caller on the
+    line is not necessarily the resident who filed it. The agent has to verify
+    them before treating them as that reporter, and it can only verify against
+    something it is allowed to speak. That is the name and the *last four
+    digits* of the number - never the number itself, which belongs to whoever
+    filed and would be read out to a caller who has not been verified yet.
+
+    ``identifier`` is what the caller was looked up by. When that was a phone
+    number, the person on file is whoever that number belongs to rather than
+    whoever happened to file first, so a second reporter checking on a case is
+    verified against their own details.
+
+    Returns ``None`` when nobody on the case left contact details, which the
+    agent reads as "there is nothing to verify against".
+    """
+    reports = session.exec(
+        select(Report).where(Report.case_id == case.id).order_by(Report.created_at)
+    ).all()
+    contactable = [r for r in reports if r.reporter_name or r.reporter_phone]
+    if not contactable:
+        return None
+
+    digits = "".join(ch for ch in (identifier or "") if ch.isdigit())
+    # Six digits is a case number without its prefix, not a phone number:
+    # ``find_case`` reads it that way and so does this.
+    matched = (
+        next((r for r in contactable if r.reporter_phone == digits), None)
+        if len(digits) >= 7
+        else None
+    )
+    report = matched or contactable[0]
+    return {"name": report.reporter_name, "phone_last4": phone_last4(report.reporter_phone)}
+
+
 # --------------------------------------------------------------------------
 # Reports: the deduplication path
 # --------------------------------------------------------------------------
@@ -532,6 +579,7 @@ def file_report(
     reporter_name: str | None = None,
     reporter_phone: str | None = None,
     call_id: int | None = None,
+    case: Case | None = None,
     actor: str = "voice_agent",
 ) -> tuple[Report, Case, bool]:
     """File a resident's report, attaching it to an existing case when the city
@@ -543,31 +591,42 @@ def file_report(
     A classification below the confidence threshold is not merged on. Guessing
     "pothole" at 0.3 and folding the caller into somebody else's pothole case
     would hide their report behind a coin flip.
+
+    Pass ``case`` when the caller has already named the incident - a second
+    resident ringing about SR-548116 is a new reporter on *that* case. Running
+    them back through the duplicate search could land them on a different case
+    entirely, or open a new one, and the case they asked about would never gain
+    the corroboration or their callback details. A pinned report leaves the
+    case's own fields alone: a second reporter adds their account, they do not
+    silently re-categorise somebody else's incident.
     """
-    if not triage.classification_accepted(issue_type_confidence):
-        issue_type = None
-
-    open_cases = session.exec(
-        select(Case).where(Case.status != CaseStatus.resolved).order_by(Case.created_at.desc())
-    ).all()
-    match = triage.find_duplicate(open_cases, issue_type, location)
-
-    merged = match is not None
-    if merged:
-        case, similarity = match
+    if case is not None:
+        similarity, merged = 1.0, True
     else:
-        case = create_case(
-            session,
-            {
-                "issue_type": issue_type,
-                "issue_type_confidence": issue_type_confidence,
-                "location": location,
-                "location_text": location,
-                "description": description,
-            },
-            actor=actor,
-        )
-        similarity = 1.0
+        if not triage.classification_accepted(issue_type_confidence):
+            issue_type = None
+
+        open_cases = session.exec(
+            select(Case).where(Case.status != CaseStatus.resolved).order_by(Case.created_at.desc())
+        ).all()
+        match = triage.find_duplicate(open_cases, issue_type, location)
+
+        merged = match is not None
+        if merged:
+            case, similarity = match
+        else:
+            case = create_case(
+                session,
+                {
+                    "issue_type": issue_type,
+                    "issue_type_confidence": issue_type_confidence,
+                    "location": location,
+                    "location_text": location,
+                    "description": description,
+                },
+                actor=actor,
+            )
+            similarity = 1.0
 
     report = Report(
         case_id=case.id,
