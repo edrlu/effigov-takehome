@@ -23,6 +23,29 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * A sentence for the panel that will render this, never the wire body.
+ *
+ * FastAPI answers every failure with `{"detail": "case not found"}`, and
+ * putting the response text on screen verbatim shows the reader a JSON blob
+ * where an explanation belongs. Take the detail out; fall back to the status
+ * line when the body is not the shape we expect.
+ */
+export async function errorMessage(response: Response): Promise<string> {
+  const status = `${response.status} ${response.statusText}`.trim();
+  const body = await response.text().catch(() => "");
+  if (!body) return status;
+
+  try {
+    const parsed = JSON.parse(body);
+    const detail = typeof parsed === "object" && parsed !== null ? parsed.detail : null;
+    if (typeof detail === "string" && detail) return detail.slice(0, 200);
+  } catch {
+    // Not JSON. The raw text is the best we have, and it is already prose.
+  }
+  return body.slice(0, 200) || status;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -36,8 +59,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new ApiError(detail?.slice(0, 200) || `${response.status} ${response.statusText}`, response.status);
+    throw new ApiError(await errorMessage(response), response.status);
   }
 
   if (response.status === 204) {
