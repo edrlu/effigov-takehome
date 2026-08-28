@@ -270,9 +270,16 @@ async def get_call(call_id: int, session: Session = Depends(get_session)):
 
 
 @app.patch("/api/calls/{call_id}")
-async def patch_call(call_id: int, body: CallUpdate, session: Session = Depends(get_session)):
+async def patch_call(
+    call_id: int,
+    body: CallUpdate,
+    actor: str = "voice_agent",
+    session: Session = Depends(get_session),
+):
     call = _call_or_404(session, call_id)
-    return store.serialize(store.update_call(session, call, body.model_dump(exclude_none=True)))
+    return store.serialize(
+        store.update_call(session, call, body.model_dump(exclude_none=True), actor=actor)
+    )
 
 
 @app.post("/api/calls/{call_id}/turns", status_code=201)

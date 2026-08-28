@@ -117,3 +117,20 @@ def test_every_change_lands_in_the_audit_log(client):
     kinds = [e["kind"] for e in client.get(f"/api/cases/{case['id']}/events").json()]
     assert kinds[:3] == ["case.created", "case.routed", "report.filed"]
     assert "case.updated" in kinds and "note.added" in kinds
+
+
+def test_phone_is_formatted_once_on_the_server(client):
+    """The console renders the number the server formatted, never its own guess."""
+    call = client.post("/api/calls", json={"room": "phone-1"}).json()
+    assert call["caller_phone_display"] is None
+
+    ten = client.patch(f"/api/calls/{call['id']}", json={"caller_phone": "4155550189"}).json()
+    assert ten["caller_phone"] == "4155550189"  # storage stays digits
+    assert ten["caller_phone_display"] == "+1 (415) 555-0189"
+
+    eleven = client.patch(f"/api/calls/{call['id']}", json={"caller_phone": "14155550188"}).json()
+    assert eleven["caller_phone_display"] == "+1 (415) 555-0188"
+
+    # Not a number the city can parse: shown exactly as it was given.
+    odd = client.patch(f"/api/calls/{call['id']}", json={"caller_phone": "switchboard"}).json()
+    assert odd["caller_phone_display"] == "switchboard"

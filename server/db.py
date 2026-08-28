@@ -29,7 +29,15 @@ engine = create_engine(
 # entry here has to be nullable or carry a literal default.
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "case": {"issue_type_confidence": "FLOAT"},
-    "call": {"phase": "VARCHAR NOT NULL DEFAULT 'greeting'"},
+    "call": {
+        "phase": "VARCHAR NOT NULL DEFAULT 'greeting'",
+        "caller_name": "VARCHAR",
+        "caller_city": "VARCHAR DEFAULT 'Berkeley, CA'",
+        "line_type": "VARCHAR DEFAULT 'Mobile'",
+        "language": "VARCHAR DEFAULT 'English'",
+        "sentiment": "VARCHAR NOT NULL DEFAULT 'neutral'",
+        "activity_line": "VARCHAR",
+    },
     "turn": {"turn_seq": "INTEGER NOT NULL DEFAULT 1"},
 }
 

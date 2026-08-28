@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from server.models import CallPhase, CaseStatus, Department, IssueType, Priority
+from server.models import CallPhase, CaseStatus, Department, IssueType, Priority, Sentiment
 
 
 class CaseCreate(BaseModel):
@@ -64,6 +64,12 @@ class CallUpdate(BaseModel):
     phase: CallPhase | None = None
     summary: str | None = None
     caller_phone: str | None = None
+    caller_name: str | None = None
+    caller_city: str | None = None
+    line_type: str | None = None
+    language: str | None = None
+    sentiment: Sentiment | None = None
+    activity_line: str | None = None
 
 
 class TurnCreate(BaseModel):

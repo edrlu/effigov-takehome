@@ -450,3 +450,32 @@ def test_the_audit_log_streams_instead_of_being_refetched(client):
     stored = client.get(f"/api/cases/{case['id']}/events").json()
     assert [e["id"] for e in streamed if e["case_id"] == case["id"]] == [e["id"] for e in stored]
     assert [e["kind"] for e in stored][:3] == ["case.created", "case.routed", "report.filed"]
+
+
+def test_a_caller_identity_patch_names_only_the_fields_that_moved(client):
+    """Caller identity rides the existing call.updated frame, honestly."""
+    call = client.post("/api/calls", json={"room": "identity-1"}).json()
+    assert call["caller_city"] == "Berkeley, CA"
+    assert call["line_type"] == "Mobile"
+    assert call["language"] == "English"
+    assert call["sentiment"] == "neutral"
+
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()  # hello
+
+        client.patch(
+            f"/api/calls/{call['id']}",
+            json={
+                "caller_name": "Edward Lu",
+                "caller_city": "Berkeley, CA",  # already true, so not news
+                "sentiment": "negative",
+                "activity_line": "Handling request about pothole on Oak Street.",
+            },
+        )
+        updates = [f for f in read_until_quiet(ws) if f["type"] == "call.updated"]
+
+    assert len(updates) == 1
+    payload = updates[0]["payload"]
+    assert sorted(payload["changed"]) == ["activity_line", "caller_name", "sentiment"]
+    assert payload["call"]["caller_name"] == "Edward Lu"
+    assert payload["call"]["sentiment"] == "negative"

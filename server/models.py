@@ -75,6 +75,18 @@ class CallStatus(str, Enum):
     completed = "completed"
 
 
+class Sentiment(str, Enum):
+    """How the caller sounds right now, as the agent reads it.
+
+    Deliberately coarse. A supervisor scanning a wall of live calls needs to
+    spot the distressed one, not to grade tone on a scale.
+    """
+
+    positive = "positive"
+    neutral = "neutral"
+    negative = "negative"
+
+
 class CallPhase(str, Enum):
     """Where a live call has got to, for staff watching it happen.
 
@@ -145,6 +157,18 @@ class Call(SQLModel, table=True):
     caller_phone: str | None = None
     summary: str | None = None
 
+    # Who is on the line. Carried on the call itself, not only on the report,
+    # so a console can render the caller before a report has been filed.
+    caller_name: str | None = None
+    caller_city: str | None = Field(default="Berkeley, CA")
+    line_type: str | None = Field(default="Mobile")
+    language: str | None = Field(default="English")
+
+    sentiment: Sentiment = Field(default=Sentiment.neutral, index=True)
+    # One short present-tense sentence: what the agent is doing right now.
+    # ``phase`` says which stage the call is in; this says it in English.
+    activity_line: str | None = None
+
     started_at: datetime = Field(default_factory=utcnow)
     ended_at: datetime | None = None
 
@@ -177,7 +201,7 @@ class Event(SQLModel, table=True):
 
     # case.created | case.updated | note.added | call.started | call.ended
     # report.filed | report.merged | case.routed | case.escalated | priority.changed
-    # call.phase
+    # call.phase | call.updated
     kind: str
     field: str | None = None
     old_value: str | None = None

@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import httpx
 import websockets
 
-BASE = "http://localhost:8000"
-WS = "ws://localhost:8000/ws"
+# Same variable the voice agent uses, so a backend on another port can be
+# rehearsed against without editing anything.
+BASE = os.getenv("BACKEND_URL", "http://localhost:8000")
+WS = BASE.replace("http", "ws", 1) + "/ws"
 
 # Slow enough that a human watching the dashboard can follow it.
 BEAT = 0.35
@@ -65,9 +68,21 @@ async def utterance(client: httpx.AsyncClient, call_id: int, role: str, text: st
     await asyncio.sleep(0.12)
 
 
-async def phase(client: httpx.AsyncClient, call_id: int, name: str) -> None:
-    await client.patch(f"/api/calls/{call_id}", json={"phase": name})
+async def phase(
+    client: httpx.AsyncClient, call_id: int, name: str, activity: str | None = None
+) -> None:
+    """Move the call on, carrying the one-line activity the console shows."""
+    body: dict = {"phase": name}
+    if activity:
+        body["activity_line"] = activity
+    await client.patch(f"/api/calls/{call_id}", json=body)
     await asyncio.sleep(BEAT)
+
+
+async def patch_call(client: httpx.AsyncClient, call_id: int, **fields) -> dict:
+    r = await client.patch(f"/api/calls/{call_id}", json=fields)
+    await asyncio.sleep(0.12)
+    return r.json()
 
 
 async def main() -> None:
@@ -99,7 +114,11 @@ async def main() -> None:
 
 async def call_one(client: httpx.AsyncClient) -> dict:
     call = (await client.post("/api/calls", json={"room": "rehearsal-1"})).json()
-    await phase(client, call["id"], "gathering")
+    assert call["caller_city"] == "Berkeley, CA"
+    assert call["line_type"] == "Mobile"
+    assert call["language"] == "English"
+    assert call["sentiment"] == "neutral"
+    await phase(client, call["id"], "gathering", "Gathering details about the road problem.")
     await utterance(
         client, call["id"], "caller",
         "There is something wrong with the road on Shattuck near University.",
@@ -120,7 +139,7 @@ async def call_one(client: httpx.AsyncClient) -> dict:
         )
     ).json()
     case = filed["case"]
-    await phase(client, call["id"], "filed")
+    await phase(client, call["id"], "filed", "Confirming the report and taking details.")
     print(
         f"call 1  {case['case_number']}  confidence=0.35  "
         f"issue_type={case['issue_type']}  {case['department']}  "
@@ -137,6 +156,26 @@ async def call_one(client: httpx.AsyncClient) -> dict:
         client, call["id"], "caller",
         "It is a deep hole, my front wheel dropped right into it.",
     )
+
+    # The caller is not happy, and the console should say so while the call is
+    # still up rather than in a transcript afterwards.
+    identified = await patch_call(
+        client,
+        call["id"],
+        caller_name="Edward Lu",
+        caller_phone="4155550189",
+        line_type="Mobile",
+        language="English",
+        sentiment="negative",
+        activity_line="Handling request about pothole on Shattuck.",
+    )
+    print(
+        f"        {identified['caller_name']}  {identified['caller_phone_display']}  "
+        f"{identified['caller_city']}  {identified['line_type']}  "
+        f"{identified['language']}  sentiment={identified['sentiment']}"
+    )
+    assert identified["caller_phone_display"] == "+1 (415) 555-0189"
+    assert identified["caller_phone"] == "4155550189", "storage must stay digits"
 
     # Now it is clear. The classification lands and the case routes itself.
     case = (
@@ -166,11 +205,17 @@ async def call_one(client: httpx.AsyncClient) -> dict:
         json={"reporter_name": "Edward Lu", "reporter_phone": "5105551212"},
     )
 
-    await phase(client, call["id"], "wrapping")
+    await phase(client, call["id"], "wrapping", "Reading the case number back to the caller.")
     await utterance(
         client, call["id"], "agent",
         f"Your case number is {case['case_number']}. Anything else today?",
     )
+    # Reassured now that the city has taken it.
+    calmed = await patch_call(client, call["id"], sentiment="positive")
+    assert calmed["sentiment"] == "positive"
+    # The same identity sent twice is not news, so nothing should be broadcast.
+    await patch_call(client, call["id"], caller_name="Edward Lu", sentiment="positive")
+
     await client.patch(f"/api/calls/{call['id']}", json={"status": "completed"})
     return case
 
@@ -182,7 +227,10 @@ async def call_one(client: httpx.AsyncClient) -> dict:
 
 async def call_two(client: httpx.AsyncClient, first: dict) -> None:
     call = (await client.post("/api/calls", json={"room": "rehearsal-2"})).json()
-    await phase(client, call["id"], "gathering")
+    await phase(client, call["id"], "gathering", "Taking a second report on the same road.")
+    await patch_call(
+        client, call["id"], caller_name="Priya Raman", caller_phone="15105550143"
+    )
     await utterance(
         client, call["id"], "caller",
         "There is a giant pothole at University Ave and Shattuck.",
@@ -200,7 +248,7 @@ async def call_two(client: httpx.AsyncClient, first: dict) -> None:
             },
         )
     ).json()
-    await phase(client, call["id"], "filed")
+    await phase(client, call["id"], "filed", "Telling the caller the city already knows.")
     case = second["case"]
     print(
         f"call 2  {case['case_number']}  merged={second['merged']}  "
@@ -219,7 +267,11 @@ async def call_two(client: httpx.AsyncClient, first: dict) -> None:
 
 async def call_three(client: httpx.AsyncClient) -> dict:
     call = (await client.post("/api/calls", json={"room": "rehearsal-3"})).json()
-    await phase(client, call["id"], "gathering")
+    await phase(client, call["id"], "gathering", "Taking a report about a downed power line.")
+    await patch_call(
+        client, call["id"], caller_name="Sam Ortega", caller_phone="5105550177",
+        sentiment="negative", line_type="Landline",
+    )
     await utterance(
         client, call["id"], "caller",
         "A power line is down and sparking in the road at Sacramento and Ashby.",
@@ -236,7 +288,7 @@ async def call_three(client: httpx.AsyncClient) -> dict:
             },
         )
     ).json()
-    await phase(client, call["id"], "filed")
+    await phase(client, call["id"], "filed", "Escalating a live hazard to a person.")
     escalated = (
         await client.post(
             f"/api/cases/{third['case']['id']}/escalate",
@@ -315,12 +367,29 @@ def report_stream(stream: Stream) -> None:
     ]
     silent = [f for f in stream.frames if not f["payload"].get("changed", ["x"])]
 
+    updates = stream.of("call.updated")
+    activities = [
+        f["payload"]["call"]["activity_line"]
+        for f in updates
+        if "activity_line" in f["payload"]["changed"]
+    ]
+    sentiments = [
+        f["payload"]["call"]["sentiment"]
+        for f in updates
+        if "sentiment" in f["payload"]["changed"]
+    ]
+
     print(f"sequence  {seqs[0]}..{seqs[-1]}, {len(seqs)} frames, no gaps")
     print(f"phases    {' -> '.join(phases)}")
+    print(f"activity  {activities[-1] if activities else '-'}")
+    print(f"sentiment {' -> '.join(sentiments) if sentiments else '-'}")
     print(f"deltas    {len(stream.of('transcript.delta'))} interim, "
           f"{len(stream.of('transcript.turn'))} final")
     print(f"audit     {len(stream.of('event.appended'))} rows streamed live")
     assert not silent, "a frame claimed a change without naming a field"
+    assert activities, "no activity line ever reached the console"
+    assert all(len(a) <= 70 for a in activities), "an activity line is too long to render"
+    assert "negative" in sentiments, "the frustrated caller never showed up as negative"
     print("frames    " + ", ".join(sorted({f["type"] for f in stream.frames})))
 
 
