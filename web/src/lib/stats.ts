@@ -11,7 +11,7 @@
  * never filled in with invented numbers. A panel with no data says so.
  */
 
-import { API_BASE, ApiError } from "./api";
+import { API_BASE, ApiError, errorMessage } from "./api";
 import { ISSUE_LABEL } from "./labels";
 import type { IssueType } from "./types";
 
@@ -23,8 +23,7 @@ async function request<T>(path: string): Promise<T> {
     throw new ApiError(`Cannot reach the case API at ${API_BASE}`, 0);
   }
   if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new ApiError(detail?.slice(0, 200) || `${response.status} ${response.statusText}`, response.status);
+    throw new ApiError(await errorMessage(response), response.status);
   }
   return (await response.json()) as T;
 }
