@@ -357,9 +357,16 @@ async def websocket_endpoint(ws: WebSocket, since: int | None = None, session: S
     client = await hub.connect(ws)
     try:
         latest, replay = _resume_window(session, since)
+        frames = None if replay is None else [row.frame for row in replay]
+        # The database is only needed for the resume window. Holding the
+        # request-scoped session open for the life of the socket would also
+        # hold its pooled connection, so a handful of open dashboards would
+        # exhaust the pool and every REST request would block behind them.
+        session.close()
+
         client.skip_through = latest
 
-        if replay is None:
+        if frames is None:
             await ws.send_json(
                 hub_envelope("hello", {"latest_seq": latest, "resume": False})
             )
@@ -375,8 +382,8 @@ async def websocket_endpoint(ws: WebSocket, since: int | None = None, session: S
                     },
                 )
             )
-            for row in replay:
-                await ws.send_text(row.frame)
+            for frame in frames:
+                await ws.send_text(frame)
 
         # Only now start the writer: anything published during the replay is
         # already queued, and the seq filter drops what the replay covered.
