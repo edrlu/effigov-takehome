@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -97,6 +98,9 @@ Rules:
   human. Claiming certainty you do not have routes a crew to the wrong place.
 - Call `set_call_phase` as the conversation moves: `gathering` once you start
   collecting details, `wrapping` when you begin reading the case number back.
+- When the caller says they have nothing more to add, close out: thank them by
+  name, say who is handling it, invite them to call back, and then call
+  `end_call` so the line hangs up instead of sitting open in silence.
 - Open with: "{GREETING}"
 """
 
@@ -112,6 +116,8 @@ class CallState:
     report_id: int | None = None
     phase: str = "greeting"
     collected: dict[str, str] = field(default_factory=dict)
+    # Set by the entrypoint, which is the only place that holds the room.
+    request_hangup: Callable[[], None] | None = None
 
     async def set_phase(self, phase: str) -> None:
         """Tell the backend where the call has got to, once per transition."""
@@ -325,6 +331,24 @@ class IntakeAgent(Agent):
         )
 
     @function_tool
+    async def end_call(self, ctx: RunContext[CallState]) -> str:
+        """Hang up. Call this once the caller has confirmed they have nothing further.
+
+        Two conditions, both required. The caller has told you they have
+        nothing more to add, and you have already delivered your closing line.
+        Never call this before both are true, and never while you are still
+        waiting on something you asked for - a phone number, a spelling, a
+        confirmation. A caller cut off mid-answer has to ring back and start
+        again. If you are unsure whether they are finished, ask.
+        """
+        state = ctx.userdata
+        if state.request_hangup is None:
+            return "This call cannot be ended from here."
+        state.request_hangup()
+        logger.info("hanging up call %s", state.call_id)
+        return "The line will close once you have finished speaking. Say nothing further."
+
+    @function_tool
     async def set_call_phase(
         self,
         ctx: RunContext[CallState],
@@ -426,6 +450,20 @@ async def entrypoint(ctx: JobContext) -> None:
             await api.add_turn(call_id, speaker, text)
 
         _spawn(_write(state.call_id, speaker, text.strip()))
+
+    async def _hangup() -> None:
+        """Let the goodbye finish playing, then tear the room down.
+
+        Drain first. ``end_call`` returns before the closing line has finished
+        playing, and deleting the room out from under it cuts the caller off
+        mid-sentence. Deleting the room is also what triggers the shutdown
+        callback below, so the summary, the completed status, and the ended
+        phase all still land.
+        """
+        await session.drain()
+        await ctx.delete_room()
+
+    state.request_hangup = lambda: _spawn(_hangup())
 
     async def _finish() -> None:
         """On hangup: write a summary, close the call, park the case for staff."""

@@ -209,6 +209,7 @@ The client may send `{"type":"ping"}` and gets a `pong` back; any other client f
 | `escalate_to_human` | Flags an immediate danger for human review |
 | `set_status` | Moves the case between new, in_progress, needs_info, resolved |
 | `set_call_phase` | Tells the dashboard where the conversation has got to |
+| `end_call` | Hangs up once the caller has confirmed they are finished, after the closing line has played |
 
 ## Tradeoffs
 
