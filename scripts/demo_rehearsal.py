@@ -85,6 +85,50 @@ async def patch_call(client: httpx.AsyncClient, call_id: int, **fields) -> dict:
     return r.json()
 
 
+# Real Berkeley coordinates, recorded rather than looked up. The backend
+# geocodes every one of these strings for itself, off the request path, and
+# gets exactly these answers - but a rehearsal has to draw its map in a room
+# with no network, and a case that already carries a pin is left alone.
+PINS = {
+    "Shattuck Avenue near University": {
+        "location_formatted": "University Avenue & Shattuck Avenue, University Avenue, "
+        "Downtown Berkeley, Berkeley, Alameda County, California, 94704, United States",
+        "latitude": 37.8720318,
+        "longitude": -122.2685686,
+        "location_precision": "exact",
+        "location_detail": "Eastbound lane, just past the crosswalk.",
+    },
+    "Sacramento St and Ashby": {
+        "location_formatted": "Ashby Avenue & Sacramento Street, Ashby Avenue, "
+        "San Pablo Park, Berkeley, Alameda County, California, 94703, United States",
+        "latitude": 37.8532066,
+        "longitude": -122.2792304,
+        "location_precision": "exact",
+        "location_detail": "Line down across the northbound lane, still arcing.",
+    },
+}
+
+
+async def pin(client: httpx.AsyncClient, case: dict) -> dict:
+    """Put the recorded coordinates on a case, the way a geocode would.
+
+    Same endpoint, same fields, same ``case.updated`` frame with ``changed``
+    naming the location fields - there is no separate path for a map pin.
+    """
+    known = PINS.get(case.get("location") or "")
+    if not known:
+        return case
+    pinned = (await client.patch(f"/api/cases/{case['id']}", json=known)).json()
+    await asyncio.sleep(0.12)
+    print(
+        f"        pinned {pinned['latitude']:.5f},{pinned['longitude']:.5f}  "
+        f"precision={pinned['location_precision']}  "
+        f"detail={pinned['location_detail']!r}"
+    )
+    assert pinned["location_text"] == case["location"], "the caller's own words must survive"
+    return pinned
+
+
 async def main() -> None:
     stream = Stream()
 
@@ -140,6 +184,7 @@ async def call_one(client: httpx.AsyncClient) -> dict:
     ).json()
     case = filed["case"]
     await phase(client, call["id"], "filed", "Confirming the report and taking details.")
+    case = await pin(client, case)
     print(
         f"call 1  {case['case_number']}  confidence=0.35  "
         f"issue_type={case['issue_type']}  {case['department']}  "
@@ -289,6 +334,7 @@ async def call_three(client: httpx.AsyncClient) -> dict:
         )
     ).json()
     await phase(client, call["id"], "filed", "Escalating a live hazard to a person.")
+    await pin(client, third["case"])
     escalated = (
         await client.post(
             f"/api/cases/{third['case']['id']}/escalate",
@@ -312,10 +358,15 @@ async def report_queue(client: httpx.AsyncClient) -> None:
     print("\nqueue, highest priority first")
     for case in (await client.get("/api/cases")).json():
         flag = "  ESCALATED" if case["escalated"] else ""
+        where = (
+            f"{case['latitude']:.4f},{case['longitude']:.4f} {case['location_precision']}"
+            if case["latitude"] is not None
+            else f"unresolved: {case['location_text'] or case['location'] or '-'}"
+        )
         print(
             f"  {case['priority_score']:>3}  {case['case_number']}  "
             f"{case['priority']:<6} {str(case['issue_type']):<17} "
-            f"{case['report_count']} report(s){flag}"
+            f"{case['report_count']} report(s)  {where}{flag}"
         )
 
 

@@ -12,6 +12,14 @@ Two passes, for two different reasons:
    would have had, including the audit ``Event`` rows the analytics read to
    date a resolution.
 
+Both passes carry coordinates for their Berkeley locations, recorded rather than
+looked up. The backend geocodes every one of these strings for itself, off the
+request path, and returns exactly these answers - but a demo has to draw its map
+in a room with no network, and a case that already carries a pin is left alone
+by a background geocode that lands later. The five that resolve to nothing, and
+the several that OSM knows only to street level, are kept as they are: a map
+that is honest about what the city does not know is the point.
+
 Run it against a running API: ``uv run python scripts/seed.py``.
 """
 
@@ -39,6 +47,7 @@ from server.models import (  # noqa: E402
     CaseStatus,
     Event,
     IssueType,
+    LocationPrecision,
     Report,
     Sentiment,
     new_case_number,
@@ -123,6 +132,145 @@ BACKLOG = [
     (None, "1600 Sixth St", "Report was hard to make out, needs a callback."),
 ]
 
+# Where each seeded location actually is, as OpenStreetMap answered for the
+# exact strings above. ``None`` means Nominatim found nothing inside Berkeley
+# for it, which is a real outcome and one the dashboard has to be able to show.
+GEOCODED = {
+    '1420 Chestnut St': (
+        'Chestnut Street, Poets Corner, Berkeley, Alameda County, California, 94702, United States',
+        37.8703798, -122.2881401, 'approximate',
+    ),
+    '88 Marina Blvd': (
+        'Marina Boulevard, Berkeley Marina, Berkeley, Alameda County, California, 94710, United States',
+        37.8684151, -122.3130132, 'approximate',
+    ),
+    'Telegraph Ave and Dwight Way': (
+        'Telegraph Avenue & Dwight Way, Telegraph Avenue, Southside, Berkeley, Alameda County, California, 94705, United States',
+        37.86455, -122.2586656, 'exact',
+    ),
+    '2210 Ward St': (
+        '2210, Ward Street, LeConte, Berkeley, Alameda County, California, 94705, United States',
+        37.8597712, -122.2639636, 'exact',
+    ),
+    '1719 Addison St': (
+        '1719, Addison Street, Central Berkeley, Berkeley, Alameda County, California, 94704, United States',
+        37.8703518, -122.2765445, 'exact',
+    ),
+    '500 El Cerrito Plaza': None,
+    '3040 Adeline St': (
+        'Adeline Street, Lorin, Berkeley, Alameda County, California, 94703, United States',
+        37.8473528, -122.2718371, 'approximate',
+    ),
+    '1200 University Ave': (
+        '1200, University Avenue, Poets Corner, Berkeley, Alameda County, California, 94702, United States',
+        37.869321, -122.289396, 'exact',
+    ),
+    '77 Solano Ave': (
+        'Solano Avenue, Northbrae, Berkeley, Alameda County, California, 94707, United States',
+        37.8911319, -122.276119, 'approximate',
+    ),
+    'Sacramento St near Dwight Way': (
+        'Dwight Way & Sacramento Street, Dwight Way, Poets Corner, Berkeley, Alameda County, California, 94703, United States',
+        37.862292, -122.2809336, 'exact',
+    ),
+    'Ashby Ave and Shattuck Ave': (
+        'Ashby Avenue & Shattuck Avenue, Ashby Avenue, Berkeley, Alameda County, California, 94705, United States',
+        37.8552555, -122.2662411, 'exact',
+    ),
+    '1900 Sixth St': (
+        '1900;1904, Sixth Street, West Berkeley, Berkeley, Alameda County, California, 94710, United States',
+        37.869004, -122.298514, 'approximate',
+    ),
+    'Gilman St under the overpass': None,
+    'College Ave and Alcatraz Ave': (
+        'College Avenue & Alcatraz Avenue, College Avenue, North Oakland, Berkeley, Alameda County, California, 94168, United States',
+        37.8509305, -122.252566, 'exact',
+    ),
+    'Milvia St and Allston Way': None,
+    '2400 Durant Ave': (
+        'Cafe 3, 2400;2430;2432;2434;2436;2438;2440;2442;2444;2446;2450, Durant Avenue, Southside, Berkeley, Alameda County, California, 94720, United States',
+        37.8672882, -122.2605158, 'approximate',
+    ),
+    'Grizzly Peak Blvd': (
+        'Grizzly Peak Boulevard, Berkeley Hills, Berkeley, Alameda County, California, 94708, United States',
+        37.8938469, -122.2579519, 'approximate',
+    ),
+    '1000 Cedar St': (
+        '1000, Cedar Street, Ocean View, Berkeley, Alameda County, California, 94710, United States',
+        37.8746009, -122.2961168, 'exact',
+    ),
+    '2130 Center St': (
+        '2128;2130, Center Street, Downtown Berkeley, Berkeley, Alameda County, California, 94704, United States',
+        37.8701496, -122.267053, 'approximate',
+    ),
+    '1408 Blake St': (
+        '1408, Blake Street, San Pablo Park, Berkeley, Alameda County, California, 94703, United States',
+        37.8608669, -122.2825554, 'exact',
+    ),
+    '2555 Telegraph Ave': (
+        '2555, Telegraph Avenue, Southside, Berkeley, Alameda County, California, 94704, United States',
+        37.8640258, -122.2588173, 'exact',
+    ),
+    '1030 Hearst Ave': (
+        '1030, Hearst Avenue, Central Berkeley, Berkeley, Alameda County, California, 94703, United States',
+        37.87209, -122.2819442, 'exact',
+    ),
+    'Sixth St and Camelia St': None,
+    '2900 Russell St': (
+        '2900, Russell Street, Claremont, Berkeley, Alameda County, California, 94168, United States',
+        37.8586284, -122.2482241, 'exact',
+    ),
+    'Berkeley Way underpass': None,
+    '1730 Oregon St': (
+        'Martin Luther King Jr. Youth Services Center, 1730, Oregon Street, South Berkeley, North Oakland, Berkeley, Alameda County, California, 94703, United States',
+        37.8565345, -122.2735435, 'exact',
+    ),
+    'Center St and Oxford St': (
+        'Li Ka Shing Center, 1951, Oxford Street, Downtown Berkeley, Berkeley, Alameda County, California, 94720, United States',
+        37.8729723, -122.2654381, 'approximate',
+    ),
+    'Shattuck Ave and Center St': (
+        'Center Street & Shattuck Avenue, Center Street, Downtown Berkeley, Berkeley, Alameda County, California, 94704, United States',
+        37.8703132, -122.2686169, 'exact',
+    ),
+    '1600 Sixth St': (
+        '1600, Sixth Street, Ocean View, Berkeley, Alameda County, California, 94710, United States',
+        37.873945, -122.299783, 'exact',
+    ),
+}
+
+# The "whereabouts on the street" note the agent asks for once it has the
+# address. No geocoder produces this, and no map pin replaces it.
+LOCATION_DETAIL = {
+    "1420 Chestnut St": "Third house up from the corner, bins left at the curb.",
+    "88 Marina Blvd": "Pole on the water side of the road, by the second bench.",
+    "Telegraph Ave and Dwight Way": "Northeast corner, the shelter facing downhill.",
+    "Sacramento St near Dwight Way": "Northbound lane, right where the bike lane starts.",
+    "Ashby Ave and Shattuck Ave": "Right lane heading west, just past the crosswalk.",
+    "1030 Hearst Ave": "Running out of the gutter on the south side.",
+}
+
+
+def pin_for(location: str | None) -> dict[str, object]:
+    """The recorded geocode for a seeded location, in the shape a case stores.
+
+    An empty dict for anywhere Nominatim could not place: the case keeps the
+    caller's words, stays ``unresolved``, and is still perfectly workable.
+    """
+    found = GEOCODED.get(location or "")
+    detail = LOCATION_DETAIL.get(location or "")
+    if not found:
+        return {"location_detail": detail} if detail else {}
+    formatted, latitude, longitude, precision = found
+    return {
+        "location_formatted": formatted,
+        "latitude": latitude,
+        "longitude": longitude,
+        "location_precision": precision,
+        **({"location_detail": detail} if detail else {}),
+    }
+
+
 CALLERS = [
     ("Alicia Fenn", "5105550101"),
     ("Ben Okafor", "5105550122"),
@@ -140,7 +288,22 @@ def file_todays_reports() -> None:
             response.raise_for_status()
             body = response.json()
             verb = "merged into" if body["merged"] else "opened"
-            print(f"{verb} {body['case']['case_number']}  {body['case']['department']}")
+            case = body["case"]
+
+            pin = pin_for(report["location"])
+            if pin:
+                pinned = client.patch(
+                    f"/api/cases/{case['id']}", params={"actor": "staff"}, json=pin
+                )
+                pinned.raise_for_status()
+                case = pinned.json()
+
+            where = (
+                f"{case['latitude']:.4f},{case['longitude']:.4f} {case['location_precision']}"
+                if case["latitude"] is not None
+                else "unresolved"
+            )
+            print(f"{verb} {case['case_number']}  {case['department']}  {where}")
 
 
 def backfill_history() -> None:
@@ -171,12 +334,23 @@ def backfill_history() -> None:
                 minutes=RNG.randrange(0, 60),
             )
             created = now - age
+            pin = pin_for(location)
             case = Case(
                 case_number=unique_case_number(),
                 issue_type=issue_type,
                 issue_type_confidence=None if issue_type else 0.35,
                 department=route(issue_type),
                 location=location,
+                # These rows never pass through the API, so nothing would ever
+                # geocode them. The caller's words and the pin go on together.
+                location_text=location,
+                location_formatted=pin.get("location_formatted"),
+                latitude=pin.get("latitude"),
+                longitude=pin.get("longitude"),
+                location_precision=LocationPrecision(
+                    pin.get("location_precision", LocationPrecision.unresolved.value)
+                ),
+                location_detail=pin.get("location_detail"),
                 description=description,
                 status=CaseStatus.new,
                 report_count=1,

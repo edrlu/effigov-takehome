@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 
 import pytest
@@ -11,6 +12,12 @@ from sqlmodel.pool import StaticPool
 
 from server.db import get_session
 from server.main import app
+
+# Geocoding is a live call to a free public service. The suite stubs it where
+# it tests it; everywhere else it must not reach the network, nor write to the
+# developer's own database from a background thread. Read at call time, so
+# setting it here covers every test.
+os.environ["EFFIGOV_GEOCODE"] = "0"
 
 
 def client_for(engine) -> Iterator[TestClient]:
