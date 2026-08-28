@@ -95,6 +95,9 @@ export function CallDetail({ callId }: { callId: number }) {
   }
 
   const live = call.status === "active";
+  // The backend formats the number when it can. The raw digits are storage,
+  // not something to read back to a person.
+  const phone = call.caller_phone_display ?? call.caller_phone;
 
   return (
     <div className="flex flex-col gap-5">
@@ -117,7 +120,8 @@ export function CallDetail({ callId }: { callId: number }) {
           </div>
           <p className="mt-1 text-[13px] text-muted">
             Started <span title={formatDateTime(call.started_at)}>{relativeTime(call.started_at, now)}</span>
-            {call.caller_phone ? <span className="font-mono text-faint"> &middot; {call.caller_phone}</span> : null}
+            {call.caller_name ? <span className="text-ink"> &middot; {call.caller_name}</span> : null}
+            {phone ? <span className="font-mono text-faint"> &middot; {phone}</span> : null}
           </p>
           <PhaseTrack phase={callPhase(call)} className="mt-2.5" />
         </div>

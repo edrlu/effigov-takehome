@@ -6,6 +6,7 @@
  * unavailable tile - never as a stand-in number.
  */
 
+import Link from "next/link";
 import type { ReactNode } from "react";
 import { Card, Shimmer } from "./ui";
 import { Sparkline } from "./charts";
@@ -77,13 +78,25 @@ const TONE_CLASS = {
   flat: "text-slate-400",
 } as const;
 
-function Tile({ spec, metric }: { spec: TileSpec; metric: SummaryMetric | undefined }) {
+function Tile({
+  spec,
+  metric,
+  href,
+}: {
+  spec: TileSpec;
+  metric: SummaryMetric | undefined;
+  href?: string | null;
+}) {
   const tone = metric ? deltaTone(spec.key, metric.delta) : "flat";
   // A tile with its own subtitle says that instead of a delta.
   const showDelta = metric !== undefined && spec.subtitle === undefined && metric.delta !== null;
 
-  return (
-    <Card className="flex items-center gap-3.5 px-4 py-4">
+  const body = (
+    <Card
+      className={`flex items-center gap-3.5 px-4 py-4${
+        href ? " transition-colors hover:border-[#c7d2e4] hover:bg-[#fbfcfe]" : ""
+      }`}
+    >
       <span
         className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${spec.iconClass}`}
         aria-hidden
@@ -117,9 +130,27 @@ function Tile({ spec, metric }: { spec: TileSpec; metric: SummaryMetric | undefi
       </div>
     </Card>
   );
+
+  // Live Calls is the only route into a call from this page, so when one is up
+  // the whole tile is the way through to it.
+  if (!href) return body;
+  return (
+    <Link href={href} aria-label={`${spec.label}: open the call in progress`} className="block rounded-xl">
+      {body}
+    </Link>
+  );
 }
 
-export function StatTiles({ summary, loading }: { summary: Summary | null; loading: boolean }) {
+export function StatTiles({
+  summary,
+  loading,
+  liveCallHref,
+}: {
+  summary: Summary | null;
+  loading: boolean;
+  /** Set while a call is up, so the Live Calls tile can link through to it. */
+  liveCallHref?: string | null;
+}) {
   if (loading) {
     return (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -141,7 +172,12 @@ export function StatTiles({ summary, loading }: { summary: Summary | null; loadi
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
       {TILES.map((spec) => (
-        <Tile key={spec.key} spec={spec} metric={summary?.[spec.key]} />
+        <Tile
+          key={spec.key}
+          spec={spec}
+          metric={summary?.[spec.key]}
+          href={spec.key === "live_calls" ? liveCallHref : null}
+        />
       ))}
     </div>
   );
