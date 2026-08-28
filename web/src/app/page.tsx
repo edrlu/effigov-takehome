@@ -21,7 +21,7 @@ import { CasesByTypePanel } from "@/components/dashboard/CasesByTypePanel";
 import { NeedsAttentionPanel } from "@/components/dashboard/NeedsAttentionPanel";
 import { api } from "@/lib/api";
 import { statsApi, type AttentionGroup, type CallVolume, type CasesByType, type Summary } from "@/lib/stats";
-import type { Case } from "@/lib/types";
+import type { Call, Case } from "@/lib/types";
 import { useFlash } from "@/lib/useFlash";
 import { useLiveEvents } from "@/lib/useLiveEvents";
 import { useNow } from "@/lib/useNow";
@@ -42,6 +42,12 @@ function settle<T>(result: PromiseSettledResult<T>): Loaded<T> {
 export default function DashboardPage() {
   const [cases, setCases] = useState<Case[] | null>(null);
   const [casesError, setCasesError] = useState<string | null>(null);
+
+  /**
+   * The calls behind the Live Calls tile. The tile is the only way into a
+   * call from this page, so it needs the id of one, not just the count.
+   */
+  const [liveCalls, setLiveCalls] = useState<Call[]>([]);
 
   const [days, setDays] = useState(7);
   const [summary, setSummary] = useState<Loaded<Summary>>(pending);
@@ -69,6 +75,16 @@ export default function DashboardPage() {
       });
   }, []);
 
+  const loadActiveCalls = useCallback(() => {
+    return api
+      .activeCalls()
+      .then(setLiveCalls)
+      .catch(() => {
+        // The tile falls back to a plain number; the panels below already
+        // report an unreachable API.
+      });
+  }, []);
+
   // The four analytics reads are independent: one endpoint being unavailable
   // must not blank the panels that answered.
   const loadStats = useCallback(async (window: number) => {
@@ -88,6 +104,10 @@ export default function DashboardPage() {
   useEffect(() => {
     void loadCases();
   }, [loadCases]);
+
+  useEffect(() => {
+    void loadActiveCalls();
+  }, [loadActiveCalls]);
 
   useEffect(() => {
     void loadStats(days);
@@ -132,9 +152,17 @@ export default function DashboardPage() {
     [flashField],
   );
 
+  /** Newest first, and a call that ended leaves rather than lingering. */
+  const applyCall = useCallback((call: Call) => {
+    setLiveCalls((previous) => {
+      const rest = previous.filter((item) => item.id !== call.id);
+      return call.status === "active" ? [call, ...rest] : rest;
+    });
+  }, []);
+
   const resync = useCallback(() => {
-    return Promise.all([loadCases(), loadStats(daysRef.current)]);
-  }, [loadCases, loadStats]);
+    return Promise.all([loadCases(), loadStats(daysRef.current), loadActiveCalls()]);
+  }, [loadCases, loadStats, loadActiveCalls]);
 
   useLiveEvents(
     {
@@ -164,8 +192,14 @@ export default function DashboardPage() {
       },
       // A call starting or ending moves the Live Calls tile and the volume
       // chart even when no case changed.
-      "call.started": () => scheduleStatsRefresh(),
-      "call.updated": () => scheduleStatsRefresh(),
+      "call.started": (payload) => {
+        applyCall(payload);
+        scheduleStatsRefresh();
+      },
+      "call.updated": (payload) => {
+        applyCall(payload.call);
+        scheduleStatsRefresh();
+      },
     },
     resync,
   );
@@ -176,6 +210,10 @@ export default function DashboardPage() {
   );
 
   const rows = useMemo(() => cases ?? [], [cases]);
+
+  // The call console lives at /calls/[id] and nothing else on this page links
+  // to it. Point the tile at the newest call that is still up.
+  const liveCallHref = liveCalls.length > 0 ? `/calls/${liveCalls[0].id}` : null;
 
   return (
     // The rest of the product is dark; this page is the light surface, so it
@@ -191,7 +229,7 @@ export default function DashboardPage() {
           </div>
         </header>
 
-        <StatTiles summary={summary.data} loading={statsLoading} />
+        <StatTiles summary={summary.data} loading={statsLoading} liveCallHref={liveCallHref} />
 
         <RecentCases
           cases={rows}
