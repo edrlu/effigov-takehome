@@ -9,6 +9,7 @@ Two clients talk to this service:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -21,14 +22,16 @@ from sqlmodel import Session, select
 
 from server import store
 from server.db import get_session, init_db
+from server.hub import envelope as hub_envelope
 from server.hub import hub
-from server.models import Call, CallStatus, Case, Event, Report, Turn
+from server.models import Call, CallStatus, Case, Event, Outbox, Report, Turn
 from server.schemas import (
     CallCreate,
     CallUpdate,
     CaseCreate,
     CaseUpdate,
     EscalateRequest,
+    InterimCreate,
     NoteCreate,
     ReportCreate,
     ReportUpdate,
@@ -209,6 +212,7 @@ async def file_report(
     report, case, merged = store.file_report(
         session,
         issue_type=body.issue_type,
+        issue_type_confidence=body.issue_type_confidence,
         location=body.location,
         description=body.description,
         reporter_name=body.reporter_name,
@@ -280,9 +284,19 @@ async def add_turn(call_id: int, body: TurnCreate, session: Session = Depends(ge
 @app.get("/api/calls/{call_id}/turns")
 async def list_turns(call_id: int, session: Session = Depends(get_session)):
     turns = session.exec(
-        select(Turn).where(Turn.call_id == call_id).order_by(Turn.created_at.asc())
+        select(Turn).where(Turn.call_id == call_id).order_by(Turn.turn_seq.asc())
     ).all()
     return [store.serialize(t) for t in turns]
+
+
+@app.post("/api/calls/{call_id}/interim", status_code=202)
+async def add_interim(call_id: int, body: InterimCreate, session: Session = Depends(get_session)):
+    """Stream a half-spoken utterance to the dashboard without storing it.
+
+    202, not 201: nothing was created. The frame is the whole point.
+    """
+    call = _call_or_404(session, call_id)
+    return store.add_interim(session, call, body.role, body.text)
 
 
 # --------------------------------------------------------------------------
@@ -321,12 +335,80 @@ async def livekit_token(body: TokenRequest):
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await hub.connect(ws)
+async def websocket_endpoint(ws: WebSocket, since: int | None = None, session: Session = Depends(get_session)):
+    """Live event stream, resumable.
+
+    Connect with ``?since=<seq>`` and the server replays exactly what that
+    client missed, from the outbox, byte-identical to what it broadcast the
+    first time. Without a usable ``since`` it says so, and the client refetches
+    over REST rather than sitting on state it cannot trust.
+    """
+    client = await hub.connect(ws)
     try:
+        latest, replay = _resume_window(session, since)
+        client.skip_through = latest
+
+        if replay is None:
+            await ws.send_json(
+                hub_envelope("hello", {"latest_seq": latest, "resume": False})
+            )
+        else:
+            await ws.send_json(
+                hub_envelope(
+                    "hello",
+                    {
+                        "latest_seq": latest,
+                        "resume": True,
+                        "from": since + 1,
+                        "to": latest,
+                    },
+                )
+            )
+            for row in replay:
+                await ws.send_text(row.frame)
+
+        # Only now start the writer: anything published during the replay is
+        # already queued, and the seq filter drops what the replay covered.
+        hub.start_writer(client)
+
         while True:
-            await ws.receive_text()  # client sends nothing; this just detects hangup
+            raw = await ws.receive_text()
+            if _is_ping(raw):
+                # Queued, not sent directly: one writer per socket means the
+                # client can use a pong to fence everything published before it.
+                client.offer(hub_envelope("pong", {}))
+            # Anything else is ignored on purpose. An unknown frame from a
+            # newer dashboard should not take the connection down.
     except WebSocketDisconnect:
-        hub.disconnect(ws)
+        hub.disconnect(client)
     except Exception:
-        hub.disconnect(ws)
+        hub.disconnect(client)
+
+
+def _resume_window(session: Session, since: int | None) -> tuple[int, list[Outbox] | None]:
+    """The high-water mark, and the rows to replay, or ``None`` for no resume.
+
+    A resume is refused when ``since`` is absent, negative, ahead of the server
+    (a stale client talking to a rebuilt database), or older than the retained
+    window. In every one of those cases the client's local state is a guess,
+    and a guess is what a resync exists to throw away.
+    """
+    latest = session.exec(select(Outbox.seq).order_by(Outbox.seq.desc())).first() or 0
+    if since is None or since < 0 or since > latest:
+        return latest, None
+
+    oldest = session.exec(select(Outbox.seq).order_by(Outbox.seq.asc())).first()
+    if oldest is not None and since < oldest - 1:
+        return latest, None  # the frames it needs have been trimmed away
+
+    rows = session.exec(
+        select(Outbox).where(Outbox.seq > since).order_by(Outbox.seq.asc())
+    ).all()
+    return latest, list(rows)
+
+
+def _is_ping(raw: str) -> bool:
+    try:
+        return json.loads(raw).get("type") == "ping"
+    except (ValueError, AttributeError):
+        return False
