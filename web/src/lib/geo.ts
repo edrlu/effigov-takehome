@@ -137,8 +137,13 @@ export function mapsLink(latitude: number, longitude: number): string {
 }
 
 /**
- * Split a formatted address into a street line and everything after it, so the
- * card can print the street above "Berkeley, CA" the way an envelope reads.
+ * Two lines for the card: the street, then the city and state.
+ *
+ * Nominatim returns its whole display name - street, neighbourhood, city,
+ * county, state, postcode, country - which is accurate and unreadable. The
+ * street is the first part, and the city and state are the last two that
+ * survive dropping the country, the postcode and the county, which is the
+ * "Berkeley, CA" an envelope would carry.
  */
 export function addressLines(formatted: string | null): { street: string; region: string | null } | null {
   if (!formatted) return null;
@@ -147,8 +152,24 @@ export function addressLines(formatted: string | null): { street: string; region
     .map((part) => part.trim())
     .filter(Boolean);
   if (parts.length <= 1) return { street: formatted, region: null };
-  // Drop a trailing country and a bare postcode: neither earns its own line.
-  const tail = parts.slice(1).filter((part) => !/^(usa|united states)$/i.test(part));
-  const region = tail.join(", ").replace(/\s+\d{5}(-\d{4})?$/, "").trim();
-  return { street: parts[0], region: region.length > 0 ? region : null };
+
+  const street = parts[0];
+  const rest = parts
+    .slice(1)
+    .filter((part) => !/^(usa|united states(\s+of\s+america)?)$/i.test(part))
+    .filter((part) => !/^\d{5}(-\d{4})?$/.test(part))
+    .filter((part) => !/\bcounty\b/i.test(part))
+    // The street line often repeats as its own part on a named crossing.
+    .filter((part) => !street.toLowerCase().includes(part.toLowerCase()));
+
+  const region = rest.slice(-2).map(shortenState).join(", ");
+  return { street, region: region.length > 0 ? region : null };
+}
+
+/**
+ * The geocoder is bounded to a Berkeley viewbox, so California is the only
+ * state a result can carry; anything else is left exactly as it came.
+ */
+function shortenState(part: string): string {
+  return /^california$/i.test(part) ? "CA" : part;
 }

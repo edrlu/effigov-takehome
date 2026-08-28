@@ -70,12 +70,14 @@ export function IncidentLocation({ geo, flashing = false }: { geo: CaseGeo; flas
           <div className="flex h-[190px] flex-col items-center justify-center gap-2 bg-slate-50 px-4 text-center">
             <Icon name="map" className="h-6 w-6 text-slate-300" />
             <p className="text-[12.5px] leading-4 text-slate-500">
-              {geo.pending ? "Locating this address" : "No map match for this address"}
+              {geo.pending ? "Locating this address" : "No map pin for this address yet"}
             </p>
-            <p className="max-w-[220px] text-[11.5px] leading-4 text-slate-400">
+            {/* `unresolved` is the same value whether the geocoder is still out
+                or came back with nothing, so this line has to be true of both. */}
+            <p className="max-w-[230px] text-[11.5px] leading-4 text-slate-400">
               {geo.pending
                 ? "The pin appears here as soon as the address resolves."
-                : "The address above is what the caller gave; it did not resolve to a point."}
+                : "The caller's words are all the city has so far. A pin appears here if the address resolves."}
             </p>
           </div>
         )}

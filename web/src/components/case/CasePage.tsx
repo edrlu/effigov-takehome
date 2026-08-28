@@ -30,6 +30,7 @@ import { DetailsTab } from "./DetailsTab";
 import { IncidentLocation } from "./IncidentLocation";
 import { NotesTab } from "./NotesTab";
 import { CaseSummaryCard, CollectedDetails, ResidentCard } from "./OverviewCards";
+import { GEO_FIELDS } from "@/lib/geo";
 import { caseFacts, callDuration, newestCall, progressSteps } from "./derive";
 import { Icon, type IconName } from "./icons";
 import { ErrorCard, Pill, SkeletonBar, STATUS_TONE } from "./ui";
@@ -412,9 +413,7 @@ export function CasePage({ caseId }: { caseId: number }) {
               <ResidentCard facts={facts} changed={flashed} />
               <IncidentLocation
                 geo={facts.geo}
-                flashing={
-                  flashed.has("location") || flashed.has("location_formatted") || flashed.has("latitude")
-                }
+                flashing={GEO_FIELDS.some((field) => flashed.has(field))}
               />
               <ActivityTimeline caseId={caseId} limit={5} onViewAll={() => setTab("Activity")} />
             </div>
@@ -450,11 +449,13 @@ export function CasePage({ caseId }: { caseId: number }) {
 /**
  * The app shell is still dark; this page is light. Bleed the light surface to
  * the full viewport width so it reaches the edges instead of floating in a
- * dark frame, and keep the content itself on a centred measure.
+ * dark frame, and keep the content itself on a centred measure. `cc-light` is
+ * the class the call console defines for exactly this: it repaints the shared
+ * `scroll-slim` scrollbars for a white surface.
  */
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="relative left-1/2 -my-6 min-h-[calc(100vh-3.5rem)] w-screen -translate-x-1/2 bg-[#f6f7f9] px-4 py-7 text-slate-900 sm:px-6">
+    <div className="cc-light relative left-1/2 -my-6 min-h-[calc(100vh-3.5rem)] w-screen -translate-x-1/2 bg-[#f6f7f9] px-4 py-7 text-slate-900 sm:px-6">
       <div className="mx-auto w-full max-w-[1180px]">{children}</div>
     </div>
   );

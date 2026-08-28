@@ -10,15 +10,13 @@
  * duplicated when the final lands.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { formatClock } from "@/lib/time";
 import type { Call, TranscriptDelta, Turn, TurnRole } from "@/lib/types";
 import { useLiveEvents } from "@/lib/useLiveEvents";
+import { useTailFollow } from "@/lib/useTailFollow";
 import { Card, EmptyLine, SkeletonBar } from "./ui";
-
-/** Within this many pixels of the bottom counts as following the tail. */
-const PIN_SLACK_PX = 60;
 
 const ROLE: Record<TurnRole, { label: string; className: string }> = {
   caller: { label: "Caller", className: "text-blue-600" },
@@ -32,8 +30,6 @@ type Line =
 export function CaseTranscript({ call, loading = false }: { call: Call | null; loading?: boolean }) {
   const [turns, setTurns] = useState<Turn[] | null>(null);
   const [interim, setInterim] = useState<Map<number, TranscriptDelta>>(() => new Map());
-  const scroller = useRef<HTMLDivElement>(null);
-  const pinned = useRef(true);
   const callId = call?.id ?? null;
 
   const load = useCallback(
@@ -54,7 +50,6 @@ export function CaseTranscript({ call, loading = false }: { call: Call | null; l
     let cancelled = false;
     setTurns(null);
     setInterim(new Map());
-    pinned.current = true;
     void api
       .callTurns(callId)
       .then((rows) => {
@@ -120,17 +115,8 @@ export function CaseTranscript({ call, loading = false }: { call: Call | null; l
     return rows.sort((a, b) => a.turnSeq - b.turnSeq);
   }, [turns, interim]);
 
-  // Follow the tail, but never yank the view away from someone reading back.
-  useEffect(() => {
-    const node = scroller.current;
-    if (node && pinned.current) node.scrollTop = node.scrollHeight;
-  }, [lines]);
-
-  const handleScroll = () => {
-    const node = scroller.current;
-    if (!node) return;
-    pinned.current = node.scrollHeight - node.scrollTop - node.clientHeight < PIN_SLACK_PX;
-  };
+  // Follow the tail without yanking the view away from someone reading back.
+  const tail = useTailFollow(lines);
 
   return (
     <Card
@@ -138,7 +124,7 @@ export function CaseTranscript({ call, loading = false }: { call: Call | null; l
       action={call ? <span className="font-mono text-[12px] text-slate-400">{call.room}</span> : null}
       bodyClassName="px-0 pt-1 pb-0"
     >
-      <div ref={scroller} onScroll={handleScroll} className="max-h-[620px] overflow-y-auto">
+      <div ref={tail.ref} onScroll={tail.onScroll} className="scroll-slim max-h-[620px] overflow-y-auto">
         {loading || (call && turns === null) ? (
           <div className="space-y-4 px-5 py-4">
             {Array.from({ length: 4 }).map((_, index) => (
