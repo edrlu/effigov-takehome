@@ -28,12 +28,12 @@ export function CaseSummaryCard({
   changed: ReadonlySet<string>;
 }) {
   return (
-    <Card title="Case Summary" bodyClassName="px-5 pt-2 pb-4">
+    <Card title="Case Summary">
       <p className={`-mx-1.5 rounded-lg px-1.5 py-1 text-[13.5px] leading-6 text-slate-700 ${changed.has("summary") ? "flash" : ""}`}>
         {item.summary || item.description || <Absent>No summary written yet</Absent>}
       </p>
 
-      <div className="mt-3 grid gap-x-6 gap-y-2 border-t border-slate-100 pt-3 sm:grid-cols-2">
+      <div className="mt-4 grid gap-x-8 gap-y-4 border-t border-hairline-soft pt-4 sm:grid-cols-2">
         <Field icon="tag" label="Issue Type" flashing={changed.has("issue_type")}>
           {item.issue_type ? issueLabel(item.issue_type) : <Absent>Being classified</Absent>}
         </Field>
@@ -72,8 +72,8 @@ export function CollectedDetails({
     changed.has("location") || changed.has("location_formatted") || changed.has("location_text");
 
   return (
-    <Card title="AI Collected Details" bodyClassName="px-5 pt-2 pb-4">
-      <div className="flex flex-col gap-1.5">
+    <Card title="AI Collected Details">
+      <div className="flex flex-col gap-4">
         <Field icon="pin" label="Location" flashing={locationChanged}>
           {geo.formatted ?? <Absent>No location captured yet</Absent>}
         </Field>
@@ -100,8 +100,8 @@ export function ResidentCard({ facts, changed }: { facts: CaseFacts; changed: Re
   const badge = initials(facts.residentName);
 
   return (
-    <Card title="Resident" bodyClassName="px-5 pt-2 pb-4">
-      <div className="flex items-center gap-3">
+    <Card title="Resident">
+      <div className="flex items-center gap-3.5">
         <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-blue-100 bg-blue-50 text-[13px] font-semibold text-blue-700">
           {badge ?? <Icon name="user" className="h-5 w-5 text-blue-500" />}
         </span>

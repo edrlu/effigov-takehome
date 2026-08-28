@@ -179,8 +179,10 @@ export default function DashboardPage() {
 
   return (
     // The rest of the product is dark; this page is the light surface, so it
-    // breaks out of the shell's width and paints its own background.
-    <div className="relative left-1/2 -my-6 min-h-[calc(100vh-3.5rem)] w-screen -translate-x-1/2 bg-[#f6f7f9] px-4 py-7 sm:px-6">
+    // breaks out of the shell's width and paints its own background. That
+    // background is `sheet` - the same colour the cards are - so the panels
+    // sit flat on it and are told apart by their hairlines alone.
+    <div className="relative left-1/2 -my-6 min-h-[calc(100vh-3.5rem)] w-screen -translate-x-1/2 bg-sheet px-4 py-7 sm:px-6">
       <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-4">
         <header className="flex flex-wrap items-end justify-between gap-3 pb-1">
           <div>

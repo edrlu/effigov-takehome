@@ -44,9 +44,9 @@ export function CaseProgress({ steps }: { steps: ProgressStep[] }) {
           {done} of {steps.length}
         </span>
       }
-      bodyClassName="px-5 pt-3 pb-5"
+     
     >
-      <div className="-mx-1 overflow-x-auto px-1 pb-1">
+      <div className="-mx-1 overflow-x-auto px-1 pt-1 pb-1">
         <ol className="flex min-w-[560px] items-start">
           {steps.map((step, index) => {
             const complete = step.state === "complete";
@@ -58,10 +58,14 @@ export function CaseProgress({ steps }: { steps: ProgressStep[] }) {
                 title={step.detail}
               >
                 {index > 0 ? (
+                  // The connector is drawn on the circle's centre line, and it
+                  // is blue only when the step it arrives at has been reached -
+                  // a blue line running into a grey circle reads as progress
+                  // the case has not actually made.
                   <span
                     aria-hidden
                     className={`absolute top-[13px] right-1/2 h-[2px] w-full transition-colors duration-500 ${
-                      steps[index - 1].state === "complete" ? "bg-blue-500" : "bg-slate-200"
+                      complete || current ? "bg-blue-600" : "bg-slate-200"
                     }`}
                   />
                 ) : null}
@@ -70,20 +74,20 @@ export function CaseProgress({ steps }: { steps: ProgressStep[] }) {
                   className={`relative z-10 flex h-7 w-7 items-center justify-center rounded-full border text-[12px] font-semibold transition-colors ${
                     complete || current
                       ? "border-blue-600 bg-blue-600 text-white"
-                      : "border-slate-300 bg-white text-slate-400"
+                      : "border-slate-300 bg-sheet text-slate-400"
                   } ${justCompleted === step.key ? "settle-ring" : ""}`}
                 >
                   {complete ? <Icon name="check" className="h-3.5 w-3.5" strokeWidth="2.2" /> : index + 1}
                 </span>
 
                 <p
-                  className={`mt-2 text-[12px] leading-4 ${
+                  className={`mt-2.5 text-[12px] leading-4 ${
                     step.state === "pending" ? "text-slate-500" : "font-medium text-slate-900"
                   }`}
                 >
                   {step.name}
                 </p>
-                <p className={`mt-0.5 text-[11px] leading-4 ${STATE_TEXT[step.state]}`}>
+                <p className={`mt-1 text-[11px] leading-4 ${STATE_TEXT[step.state]}`}>
                   {STEP_STATE_LABEL[step.state]}
                 </p>
               </li>

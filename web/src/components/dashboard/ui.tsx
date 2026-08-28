@@ -1,15 +1,14 @@
 /**
- * The light surface language for the staff dashboard: white cards on a very
- * light page, hairline borders, soft shadow. The rest of the product is dark,
- * so these classes are written out here rather than pushed into the shared
- * theme tokens.
+ * The light surface language for the staff dashboard, built on the shared
+ * tokens in `globals.css`. The page and the cards on it are the same surface
+ * (`sheet`): a panel is a hairline border and the whitespace around it, never
+ * a shadow and never a colour step.
  */
 
 import type { ReactNode } from "react";
 import { ArrowRightIcon } from "./icons";
 
-export const CARD =
-  "rounded-2xl border border-[#e6e8ec] bg-white shadow-[0_1px_2px_rgba(16,24,40,0.05),0_1px_3px_rgba(16,24,40,0.04)]";
+export const CARD = "rounded-2xl border border-hairline bg-sheet";
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
   return <section className={`${CARD} ${className}`}>{children}</section>;
@@ -54,7 +53,7 @@ export function RevealFooter({
   const text = expanded ? expandedLabel : label;
 
   return (
-    <div className="border-t border-[#eef0f3] px-5 py-3">
+    <div className="border-t border-hairline-soft px-5 py-3">
       {interactive ? (
         <button
           type="button"
@@ -85,5 +84,5 @@ export function PanelEmpty({ title, hint }: { title: string; hint?: string }) {
 }
 
 export function Shimmer({ className = "" }: { className?: string }) {
-  return <div className={`animate-pulse rounded bg-slate-100 ${className}`} />;
+  return <div className={`animate-pulse rounded bg-inset ${className}`} />;
 }

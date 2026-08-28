@@ -13,6 +13,17 @@
   --color-muted: #9a9aa6;
   --color-faint: #6c6c78;
   --color-accent: #6193ff;
+
+  /* The light surface language, shared by every staff-facing page.
+     The page and the cards standing on it are one flat surface: the same
+     colour, no elevation. Cards are told apart by their hairline border and
+     by the whitespace around them, never by a shadow or a colour step.
+     `inset` is the only step down, and only for a surface that genuinely has
+     to read as recessed - a table head, an input well, a placeholder. */
+  --color-sheet: #ffffff;
+  --color-hairline: #e4e7ec;
+  --color-hairline-soft: #eef0f3;
+  --color-inset: #f4f5f7;
 }
 
 @layer base {

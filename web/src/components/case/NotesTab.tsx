@@ -44,7 +44,7 @@ export function NotesTab({ item, onSaved }: { item: Case; onSaved: (next: Case) 
   };
 
   return (
-    <Card title="Notes" bodyClassName="px-5 pt-2 pb-4">
+    <Card title="Notes">
       <textarea
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
@@ -56,7 +56,7 @@ export function NotesTab({ item, onSaved }: { item: Case; onSaved: (next: Case) 
         }}
         rows={3}
         placeholder="Add a note for the crew or the next agent"
-        className="w-full resize-y rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] leading-5 text-slate-900 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none"
+        className="w-full resize-y rounded-xl border border-hairline bg-sheet px-3 py-2 text-[13px] leading-5 text-slate-900 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none"
       />
       <div className="mt-2 flex items-center justify-between gap-3">
         <p className="min-w-0 truncate text-[11.5px] text-slate-400">
@@ -73,11 +73,11 @@ export function NotesTab({ item, onSaved }: { item: Case; onSaved: (next: Case) 
       </div>
 
       {notes.length === 0 ? (
-        <p className="mt-4 border-t border-slate-100 pt-4 text-[13px] text-slate-400">
+        <p className="mt-4 border-t border-hairline-soft pt-4 text-[13px] text-slate-400">
           No notes yet. Notes are stamped and stay with the case for every later caller.
         </p>
       ) : (
-        <ul className="mt-3 divide-y divide-slate-100 border-t border-slate-100">
+        <ul className="mt-4 divide-y divide-hairline-soft border-t border-hairline-soft">
           {notes.map((note, index) => (
             <li key={`${note.stamp ?? "note"}-${index}`} className="py-2.5">
               {note.stamp ? <p className="text-[11.5px] text-slate-400 tabular-nums">{note.stamp}</p> : null}

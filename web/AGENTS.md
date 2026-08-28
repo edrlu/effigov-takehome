@@ -14,12 +14,28 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 (`src/app/layout.tsx`) paints `bg-canvas` and constrains width, so the dashboard
 breaks out with `left-1/2 w-screen -translate-x-1/2 -my-6` and paints its own
 background. That is deliberate, not a stray utility class: removing it drops a
-white card grid onto a near-black page. Its colours are written out as literal
-Tailwind classes for the same reason - the `@theme` tokens in `globals.css` are
-the dark palette, and every other route still uses them.
+card grid onto a near-black page.
 
 Its analytics reads live in `src/lib/stats.ts`, separate from `src/lib/api.ts`,
 and its panels in `src/components/dashboard/`.
+
+## The light pages are one flat surface
+
+`globals.css` carries the light surface tokens alongside the dark palette:
+`sheet`, `hairline`, `hairline-soft`, `inset`. The rule they encode is that the
+page and the cards standing on it are the *same* colour, and a card is told
+apart only by its hairline border and the whitespace around it.
+
+So: no `shadow-*` on a card, and no white-card-on-grey-page colour step. When a
+surface genuinely has to read as recessed - a table head, an input well, a
+placeholder - use `bg-inset`, never elevation. Reach for the token rather than
+writing the hex again, so the next page inherits the rule instead of drifting
+from it.
+
+The case page's `Card` (`src/components/case/ui.tsx`) owns the one header and
+body padding every card on that page uses; pass `flush` for a body that must
+reach the card's edges rather than passing padding classes, which would race
+the defaults on stylesheet order.
 
 ## Maintaining this file
 

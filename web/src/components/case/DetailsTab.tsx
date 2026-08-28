@@ -45,9 +45,9 @@ export function DetailsTab({
   const confidence = confidencePercent(item.issue_type_confidence);
 
   return (
-    <div className="grid items-start gap-5 lg:grid-cols-2">
-      <Card title="Case" bodyClassName="px-5 pt-2 pb-4">
-        <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+    <div className="grid items-start gap-6 lg:grid-cols-2">
+      <Card title="Case">
+        <div className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
           <Field icon="hash" label="Case number">
             <span className="font-mono">{item.case_number}</span>
           </Field>
@@ -98,7 +98,7 @@ export function DetailsTab({
           </div>
         ) : null}
 
-        <div className="mt-3 grid gap-2 border-t border-slate-100 pt-3">
+        <div className="mt-4 grid gap-4 border-t border-hairline-soft pt-4">
           <Field icon="note" label="Description" flashing={changed.has("description")}>
             {facts.description ?? <Absent>No description captured yet</Absent>}
           </Field>
@@ -108,9 +108,9 @@ export function DetailsTab({
         </div>
       </Card>
 
-      <div className="flex flex-col gap-5">
-        <Card title="Location" bodyClassName="px-5 pt-2 pb-4">
-          <div className="grid gap-2">
+      <div className="flex flex-col gap-6">
+        <Card title="Location">
+          <div className="grid gap-4">
             <Field icon="mic" label="Caller's words" flashing={changed.has("location_text") || changed.has("location")}>
               {geo.spoken ?? <Absent>No location captured yet</Absent>}
             </Field>
@@ -143,9 +143,9 @@ export function DetailsTab({
           </div>
         </Card>
 
-        <Card title="Call" bodyClassName="px-5 pt-2 pb-4">
+        <Card title="Call">
           {call ? (
-            <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+            <div className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
               <Field icon="mic" label="Room">
                 <span className="font-mono">{call.room}</span>
               </Field>
@@ -170,13 +170,13 @@ export function DetailsTab({
           )}
         </Card>
 
-        <Card title="Reports" bodyClassName="px-5 pt-2 pb-4">
+        <Card title="Reports">
           {reports === null ? (
             <p className="py-2 text-[13px] text-slate-400">Loading reports.</p>
           ) : reports.length === 0 ? (
             <p className="py-2 text-[13px] text-slate-400">No reports are on file for this case.</p>
           ) : (
-            <ul className="flex flex-col gap-2">
+            <ul className="flex flex-col gap-3">
               {reports.map((report) => (
                 <li key={report.id} className="rounded-xl border border-slate-200 px-3 py-2.5">
                   <div className="flex items-baseline justify-between gap-3">
