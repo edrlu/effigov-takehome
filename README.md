@@ -211,6 +211,52 @@ The client may send `{"type":"ping"}` and gets a `pong` back; any other client f
 | `set_call_phase` | Tells the dashboard where the conversation has got to |
 | `end_call` | Hangs up once the caller has confirmed they are finished, after the closing line has played |
 
+## The dashboard under motion
+
+`web/` is a Next.js App Router client that keeps one websocket per tab
+(`web/src/lib/useLiveEvents.ts`) and treats the stream as something to be
+trusted, not merely displayed.
+
+- **A cursor, not a firehose.**
+  Every data frame carries a gap-free `seq`.
+  The tab remembers the last one it applied, reconnects with `?since=<seq>`, and drops any frame that is not newer, so a replayed frame is idempotent.
+- **A resync gate.**
+  When the server answers `hello` with `resume: false`, or sends `resync_required`, local state is wrong rather than stale.
+  The socket buffers incoming frames, asks every subscriber to refetch its REST snapshot, and only then flushes the buffer in `seq` order - so a frame that lands mid-refetch is not overwritten by the older snapshot it raced.
+- **An honest indicator.**
+  `Live`, `Catching up` and `Reconnecting` are distinct states in the top nav, and while the feed is down the indicator says how stale the data is and offers an immediate retry.
+  A socket that opens but never sends a contract-shaped `hello` is treated as dead, not as live.
+- **Rows that do not jump.**
+  Live updates always change the contents of a row; they only change its *order* when nobody is reading.
+  While the pointer or focus is inside the table, a reorder or an arriving case is withheld and surfaced as a pill in the gap above the table, so nothing slides out from under a click and nothing shifts to say so.
+- **Edits that survive their own echo.**
+  A field with a staff PATCH in flight is locally owned until the PATCH resolves, so the websocket echo of the pre-edit value cannot undo what the user just did.
+- **Streaming transcript.**
+  `transcript.delta` renders as a provisional italic line with the interim marker in the timestamp column; the matching `transcript.turn` replaces it in place at the same `(call_id, turn_seq)`.
+  The view follows the tail, but never yanks a reader who has scrolled up - it offers "Jump to latest" instead.
+
+Every animation is behind `prefers-reduced-motion`, and each state that motion conveys is also carried by colour, border or text.
+
+### Driving the dashboard without the backend
+
+`web/fixture/server.mjs` is a zero-dependency stand-in that serves the REST
+snapshots and streams contract-v1 frames, including the outbox, `?since=`
+replay and the control frames.
+It exists because killing a real backend mid-call is not a repeatable test.
+
+```bash
+node web/fixture/server.mjs --port 8010
+cd web && NEXT_PUBLIC_API_URL=http://localhost:8010 \
+  NEXT_PUBLIC_WS_URL=ws://localhost:8010/ws npm run dev
+```
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /fixture/scenario?step=250` | Run one call end to end, at the given delta cadence |
+| `GET /fixture/burst` | File a duplicate report against the newest case |
+| `GET /fixture/drop` | Kill every socket but keep the outbox, exercising `?since=` replay |
+| `GET /fixture/resync` | Push `resync_required`, exercising the resync gate |
+
 ## Tradeoffs
 
 Chosen deliberately for a three hour build:

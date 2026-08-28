@@ -22,44 +22,55 @@ export function ReportsPanel({ caseItem }: { caseItem: Case }) {
   const caseId = caseItem.id;
   const [reports, setReports] = useState<Report[] | null>(null);
   const [unavailable, setUnavailable] = useState(false);
-  const { flash, flashed } = useFlash<number>();
+  /** Field-level highlights, keyed `<report id>:<field>`. */
+  const { flash, flashed } = useFlash<string>();
   const now = useNow(10_000);
 
-  useEffect(() => {
-    let cancelled = false;
-    setReports(null);
-    api
-      .caseReports(caseId)
-      .then((rows) => {
-        if (cancelled) return;
-        if (rows === null) {
-          setUnavailable(true);
-          setReports([]);
-          return;
-        }
-        setReports(rows.slice().sort(newestFirst));
-      })
-      .catch(() => {
-        if (!cancelled) setReports([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [caseId]);
-
-  const onReport = useCallback(
-    (payload: { report: Report; case: Case }) => {
-      if (payload.report.case_id !== caseId) return;
-      setReports((previous) => {
-        const rest = (previous ?? []).filter((row) => row.id !== payload.report.id);
-        return [payload.report, ...rest].sort(newestFirst);
-      });
-      flash(payload.report.id);
-    },
-    [caseId, flash],
+  const load = useCallback(
+    () =>
+      api
+        .caseReports(caseId)
+        .then((rows) => {
+          if (rows === null) {
+            setUnavailable(true);
+            setReports([]);
+            return;
+          }
+          setReports(rows.slice().sort(newestFirst));
+        })
+        .catch(() => setReports([])),
+    [caseId],
   );
 
-  useLiveEvents({ "report.filed": onReport });
+  useEffect(() => {
+    setReports(null);
+    void load();
+  }, [load]);
+
+  const upsert = useCallback((report: Report) => {
+    setReports((previous) => {
+      const rest = (previous ?? []).filter((row) => row.id !== report.id);
+      return [report, ...rest].sort(newestFirst);
+    });
+  }, []);
+
+  useLiveEvents(
+    {
+      "report.filed": (payload) => {
+        if (payload.report.case_id !== caseId) return;
+        upsert(payload.report);
+        flash(`${payload.report.id}:filed`);
+      },
+      "report.updated": (payload) => {
+        if (payload.case_id !== caseId) return;
+        upsert(payload.report);
+        // Only the details that actually landed light up: a caller giving
+        // their number back should not re-flash the whole card.
+        for (const field of payload.changed) flash(`${payload.report.id}:${field}`);
+      },
+    },
+    load,
+  );
 
   const count = reports?.length ?? caseItem.report_count ?? 0;
 
@@ -97,11 +108,17 @@ export function ReportsPanel({ caseItem }: { caseItem: Case }) {
           {reports.map((report) => (
             <li
               key={report.id}
-              className={`rounded-md border border-line bg-raised/40 p-3 ${flashed.has(report.id) ? "flash" : ""}`}
+              className={`rounded-md border border-line bg-raised/40 p-3 ${
+                flashed.has(`${report.id}:filed`) ? "flash" : ""
+              }`}
             >
               <div className="flex items-baseline justify-between gap-3">
-                <p className="min-w-0 truncate text-[13px] font-medium text-ink">
-                  {report.reporter_name || "Anonymous resident"}
+                <p
+                  className={`min-w-0 truncate rounded px-1 -mx-1 text-[13px] font-medium text-ink ${
+                    flashed.has(`${report.id}:reporter_name`) ? "flash" : ""
+                  }`}
+                >
+                  {report.reporter_name || <span className="text-faint">Anonymous resident</span>}
                 </p>
                 <span
                   className="shrink-0 text-[12px] whitespace-nowrap text-faint"
@@ -111,19 +128,33 @@ export function ReportsPanel({ caseItem }: { caseItem: Case }) {
                 </span>
               </div>
 
-              {report.reporter_phone ? (
-                <a
-                  href={`tel:${formatPhone(report.reporter_phone)}`}
-                  className="mt-0.5 inline-block font-mono text-[12px] text-muted hover:text-accent"
-                >
-                  {formatPhone(report.reporter_phone)}
-                </a>
-              ) : (
-                <p className="mt-0.5 font-mono text-[12px] text-faint">No callback number</p>
-              )}
+              {/* Fixed slot: a callback number arriving mid-call must not
+                  reflow the card it lands in. */}
+              <div
+                className={`mt-0.5 flex h-[18px] items-center rounded px-1 -mx-1 ${
+                  flashed.has(`${report.id}:reporter_phone`) ? "flash" : ""
+                }`}
+              >
+                {report.reporter_phone ? (
+                  <a
+                    href={`tel:${report.reporter_phone}`}
+                    className="font-mono text-[12px] text-muted hover:text-accent"
+                  >
+                    {formatPhone(report.reporter_phone)}
+                  </a>
+                ) : (
+                  <span className="font-mono text-[12px] text-faint">No callback number</span>
+                )}
+              </div>
 
               {report.description ? (
-                <p className="mt-2 text-[13px] leading-5 break-words text-muted">{report.description}</p>
+                <p
+                  className={`mt-2 rounded px-1 -mx-1 text-[13px] leading-5 break-words text-muted ${
+                    flashed.has(`${report.id}:description`) ? "flash" : ""
+                  }`}
+                >
+                  {report.description}
+                </p>
               ) : null}
             </li>
           ))}

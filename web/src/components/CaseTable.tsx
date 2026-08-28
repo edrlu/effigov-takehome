@@ -19,15 +19,16 @@ import { formatDateTime, relativeTime } from "@/lib/time";
 const HEAD_CLASS = "px-4 py-2.5 text-[11px] font-medium tracking-wide text-faint uppercase";
 const COLUMN_COUNT = 7;
 
+/** Only the cell that moved lights up, not the whole row. */
+const CELL_CLASS = "px-4 py-2.5 align-middle transition-colors";
+
 export function CaseTable({
   cases,
-  flashClass,
-  countFlashClass,
+  fieldFlash,
   now,
 }: {
   cases: Case[];
-  flashClass: (id: number) => string;
-  countFlashClass: (id: number) => boolean;
+  fieldFlash: (id: number, field: string) => boolean;
   now: number;
 }) {
   const router = useRouter();
@@ -49,15 +50,17 @@ export function CaseTable({
         {cases.map((item) => {
           const escalated = isEscalated(item);
           const open = () => router.push(`/cases/${item.id}`);
+          const lit = (field: string) => (fieldFlash(item.id, field) ? "flash" : "");
+          const fresh = fieldFlash(item.id, "created");
           return (
             <Fragment key={item.id}>
               <tr
                 onClick={open}
                 className={`cursor-pointer transition-colors hover:bg-raised/70 ${
                   escalated ? "bg-red-500/5" : ""
-                } ${escalated ? "" : "border-b border-line/70"} ${flashClass(item.id)}`}
+                } ${escalated ? "" : "border-b border-line/70"} ${fresh ? "flash" : ""}`}
               >
-                <td className="px-4 py-2.5 align-middle">
+                <td className={`${CELL_CLASS} ${lit("description")}`}>
                   <Link
                     href={`/cases/${item.id}`}
                     onClick={(event) => event.stopPropagation()}
@@ -70,26 +73,32 @@ export function CaseTable({
                   </p>
                 </td>
 
-                <td className="hidden px-4 py-2.5 align-middle lg:table-cell">
+                <td className={`hidden lg:table-cell ${CELL_CLASS} ${lit("location") || lit("department")}`}>
                   <p className="truncate text-[13px] text-ink">{caseLocation(item) || "Location unknown"}</p>
-                  <div className="mt-1 flex">
-                    <DepartmentTag department={item.department} />
+                  {/* Fixed-height slot: the department tag arriving must not
+                      change the height of the row. */}
+                  <div className="mt-1 flex h-[18px] items-center">
+                    <DepartmentTag department={item.department ?? "unassigned"} />
                   </div>
                 </td>
 
-                <td className="hidden px-4 py-2.5 align-middle md:table-cell">
-                  <IssueTag issue={item.issue_type} />
+                <td className={`hidden md:table-cell ${CELL_CLASS} ${lit("issue_type_confidence")}`}>
+                  <IssueTag
+                    issue={item.issue_type}
+                    confidence={item.issue_type_confidence}
+                    settling={fieldFlash(item.id, "issue_type") && item.issue_type !== null}
+                  />
                 </td>
 
-                <td className="px-4 py-2.5 align-middle">
-                  <ReportCountPill count={reportCount(item)} flashing={countFlashClass(item.id)} />
+                <td className={CELL_CLASS}>
+                  <ReportCountPill count={reportCount(item)} flashing={fieldFlash(item.id, "report_count")} />
                 </td>
 
-                <td className="px-4 py-2.5 align-middle">
-                  <StatusBadge status={item.status} />
+                <td className={CELL_CLASS}>
+                  <StatusBadge status={item.status} className={lit("status")} />
                 </td>
 
-                <td className="hidden px-4 py-2.5 align-middle sm:table-cell">
+                <td className={`hidden sm:table-cell ${CELL_CLASS} ${lit("priority") || lit("priority_score")}`}>
                   <div className="flex items-center gap-1.5">
                     <PriorityTag priority={item.priority} />
                     <ScorePill score={item.priority_score} />
@@ -97,7 +106,7 @@ export function CaseTable({
                 </td>
 
                 <td
-                  className="hidden px-4 py-2.5 text-right align-middle text-[12px] whitespace-nowrap text-muted sm:table-cell"
+                  className={`hidden text-right text-[12px] whitespace-nowrap text-muted sm:table-cell ${CELL_CLASS}`}
                   title={formatDateTime(item.updated_at)}
                 >
                   {relativeTime(item.updated_at, now)}
@@ -105,7 +114,12 @@ export function CaseTable({
               </tr>
 
               {escalated ? (
-                <tr onClick={open} className={`cursor-pointer border-b border-line/70 bg-red-500/5 ${flashClass(item.id)}`}>
+                <tr
+                  onClick={open}
+                  className={`cursor-pointer border-b border-line/70 bg-red-500/5 ${
+                    fieldFlash(item.id, "escalated") ? "flash" : ""
+                  }`}
+                >
                   <td colSpan={COLUMN_COUNT} className="px-4 pt-0 pb-2.5">
                     <EscalationBanner reason={item.escalation_reason} compact />
                   </td>

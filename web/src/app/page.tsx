@@ -1,12 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActiveCallsBar } from "@/components/ActiveCallsBar";
 import { CaseTable, CaseTableSkeleton } from "@/components/CaseTable";
+import { PendingUpdates } from "@/components/PendingUpdates";
 import { EmptyState, ErrorNote } from "@/components/ui";
 import { api } from "@/lib/api";
 import { DEPARTMENT_LABEL, ISSUE_LABEL, STATUS_LABEL } from "@/lib/labels";
 import { CASE_STATUSES, caseLocation, type Case, type CaseStatus } from "@/lib/types";
+import { useEngagement, useHeldOrder } from "@/lib/useHeldOrder";
 import { useFlash } from "@/lib/useFlash";
 import { useLiveEvents } from "@/lib/useLiveEvents";
 import { useNow } from "@/lib/useNow";
@@ -53,19 +55,21 @@ function matches(item: Case, needle: string): boolean {
   return haystack.includes(needle);
 }
 
+const caseId = (item: Case) => item.id;
+
 export default function CasesPage() {
   const [cases, setCases] = useState<Case[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [sort, setSort] = useState<SortKey>("recent");
-  const { flash: flashRow, flashClass: rowFlashClass } = useFlash<number>();
-  const { flash: flashCount, flashed: flashedCounts } = useFlash<number>();
+  /** Field-level highlights, keyed `<case id>:<field>`. */
+  const { flash: flashField, flashed: flashedFields } = useFlash<string>();
   const now = useNow(10_000);
 
   const load = useCallback(() => {
     setError(null);
-    api
+    return api
       .listCases()
       .then((rows) => setCases(rows))
       .catch((cause: Error) => {
@@ -74,30 +78,51 @@ export default function CasesPage() {
       });
   }, []);
 
-  useEffect(load, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
-  const upsert = useCallback(
-    (incoming: Case) => {
-      setCases((previous) => {
-        const rest = (previous ?? []).filter((item) => item.id !== incoming.id);
-        return [incoming, ...rest];
-      });
-      flashRow(incoming.id);
+  const upsert = useCallback((incoming: Case) => {
+    setCases((previous) => {
+      const rows = previous ?? [];
+      const index = rows.findIndex((item) => item.id === incoming.id);
+      if (index === -1) return [incoming, ...rows];
+      const next = rows.slice();
+      next[index] = incoming;
+      return next;
+    });
+  }, []);
+
+  const highlight = useCallback(
+    (item: Case, changed: string[]) => {
+      for (const field of changed) flashField(`${item.id}:${field}`);
     },
-    [flashRow],
+    [flashField],
   );
 
-  useLiveEvents({
-    "case.created": upsert,
-    "case.updated": (payload) => upsert(payload.case),
-    "case.escalated": upsert,
-    "report.filed": (payload) => {
-      upsert(payload.case);
-      // A merged report is the interesting one: an existing incident just
-      // gained corroboration, so call out the count itself.
-      if (payload.merged) flashCount(payload.case.id);
+  useLiveEvents(
+    {
+      "case.created": (payload) => {
+        upsert(payload);
+        highlight(payload, ["created"]);
+      },
+      "case.updated": (payload) => {
+        upsert(payload.case);
+        highlight(payload.case, payload.changed);
+      },
+      "case.escalated": (payload) => {
+        upsert(payload);
+        highlight(payload, ["escalated", "priority_score"]);
+      },
+      "report.filed": (payload) => {
+        upsert(payload.case);
+        // A merged report is the interesting one: an existing incident just
+        // gained corroboration, so call out the count itself.
+        highlight(payload.case, payload.merged ? ["report_count", "priority_score"] : ["created"]);
+      },
     },
-  });
+    load,
+  );
 
   const counts = useMemo(() => {
     const tally: Record<Filter, number> = { all: 0, new: 0, in_progress: 0, needs_info: 0, resolved: 0 };
@@ -108,16 +133,34 @@ export default function CasesPage() {
     return tally;
   }, [cases]);
 
-  const visible = useMemo(() => {
+  const desired = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return (cases ?? [])
       .filter((item) => (filter === "all" || item.status === filter) && matches(item, needle))
       .sort(comparator(sort));
   }, [cases, filter, query, sort]);
 
+  const { engaged, handlers } = useEngagement();
+  const held = useHeldOrder(desired, caseId, {
+    hold: engaged,
+    resetKey: `${filter}|${sort}|${query.trim().toLowerCase()}`,
+  });
+
+  const fieldFlash = useCallback(
+    (id: number, field: string) => flashedFields.has(`${id}:${field}`),
+    [flashedFields],
+  );
+
   const loading = cases === null;
   const filtered = query.trim().length > 0 || filter !== "all";
   const escalatedCount = (cases ?? []).filter((item) => item.escalated).length;
+
+  // Announce arrivals without narrating every field change on every row.
+  const previousTotal = useRef(0);
+  const arrivals = desired.length - previousTotal.current;
+  useEffect(() => {
+    previousTotal.current = desired.length;
+  }, [desired.length]);
 
   return (
     <div className="flex flex-col gap-5">
@@ -131,16 +174,16 @@ export default function CasesPage() {
           </p>
         </div>
         <div className="flex items-center gap-3 pb-1 text-[12px] tabular-nums text-faint">
-          {escalatedCount > 0 ? (
-            <span className="text-red-300">
-              {escalatedCount} escalated
-            </span>
-          ) : null}
-          <span>{loading ? "Loading" : `${visible.length} of ${counts.all} shown`}</span>
+          {escalatedCount > 0 ? <span className="text-red-300">{escalatedCount} escalated</span> : null}
+          <span>{loading ? "Loading" : `${held.rows.length} of ${counts.all} shown`}</span>
         </div>
       </div>
 
-      {error ? <ErrorNote message={error} onRetry={load} /> : null}
+      <p role="status" aria-live="polite" className="sr-only">
+        {loading ? "Loading cases" : arrivals > 0 ? `${arrivals} new case${arrivals === 1 ? "" : "s"}` : ""}
+      </p>
+
+      {error ? <ErrorNote message={error} onRetry={() => void load()} /> : null}
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-0 flex-1 sm:max-w-xs">
@@ -179,7 +222,9 @@ export default function CasesPage() {
                 }`}
               >
                 {value === "all" ? "All" : STATUS_LABEL[value]}
-                <span className="ml-1.5 tabular-nums text-faint">{counts[value]}</span>
+                <span className="ml-1.5 tabular-nums text-faint">
+                  {counts[value]}
+                </span>
               </button>
             );
           })}
@@ -201,26 +246,28 @@ export default function CasesPage() {
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-lg border border-line bg-panel">
-        {loading ? (
-          <CaseTableSkeleton />
-        ) : visible.length === 0 ? (
-          <EmptyState
-            title={filtered ? "No cases match these filters" : "No cases yet"}
-            hint={
-              filtered
-                ? "Clear the search box or pick a different status to widen the queue."
-                : "Cases appear here the moment a resident reports one. Start a call to file the first."
-            }
-          />
-        ) : (
-          <CaseTable
-            cases={visible}
-            flashClass={rowFlashClass}
-            countFlashClass={(id) => flashedCounts.has(id)}
-            now={now}
-          />
-        )}
+      {/* The pill floats in the gap above the table rather than inside it, so
+          surfacing a held change neither shifts the rows nor covers a column
+          header. The clipping that rounds the table lives on the inner box. */}
+      <div className="relative" {...handlers}>
+        <PendingUpdates added={held.added} removed={held.removed} reordered={held.reordered} onApply={held.apply} />
+
+        <div className="overflow-hidden rounded-lg border border-line bg-panel">
+          {loading ? (
+            <CaseTableSkeleton />
+          ) : held.rows.length === 0 ? (
+            <EmptyState
+              title={filtered ? "No cases match these filters" : "No cases yet"}
+              hint={
+                filtered
+                  ? "Clear the search box or pick a different status to widen the queue."
+                  : "Cases appear here the moment a resident reports one. Start a call to file the first."
+              }
+            />
+          ) : (
+            <CaseTable cases={held.rows} fieldFlash={fieldFlash} now={now} />
+          )}
+        </div>
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 /** One place for the colour and wording of every enum the UI shows. */
 
-import type { CaseStatus, Department, EventKind, IssueType, Priority } from "./types";
+import type { CallPhase, CaseStatus, Department, EventKind, IssueType, Priority } from "./types";
 
 export const STATUS_LABEL: Record<CaseStatus, string> = {
   new: "New",
@@ -61,7 +61,34 @@ export const DEPARTMENT_LABEL: Record<Department, string> = {
   unassigned: "Unassigned",
 };
 
+/**
+ * Mirrors the gate in `server/triage.py`: below this the backend keeps
+ * `issue_type` null and stores only the confidence.
+ */
+export const CONFIDENCE_THRESHOLD = 0.6;
+
+export const PHASE_LABEL: Record<CallPhase, string> = {
+  greeting: "Greeting",
+  gathering: "Gathering",
+  filed: "Filed",
+  wrapping: "Wrapping",
+  ended: "Ended",
+};
+
+/** What the agent is doing during each phase, for the step tooltip. */
+export const PHASE_HINT: Record<CallPhase, string> = {
+  greeting: "Agent has answered and is opening the call",
+  gathering: "Agent is collecting the issue, location and callback",
+  filed: "Report filed against a case",
+  wrapping: "Agent is confirming details and closing out",
+  ended: "Call finished",
+};
+
 export const FIELD_LABEL: Record<string, string> = {
+  phase: "Phase",
+  issue_type_confidence: "Classification confidence",
+  reporter_name: "Reporter",
+  reporter_phone: "Callback number",
   caller_name: "Caller",
   phone: "Phone",
   address: "Address",
@@ -90,6 +117,7 @@ export const EVENT_LABEL: Record<EventKind, string> = {
   "case.escalated": "Escalated",
   "case.routed": "Routed",
   "priority.changed": "Priority recalculated",
+  "call.phase": "Call phase",
 };
 
 export const ACTOR_LABEL: Record<string, string> = {
@@ -116,6 +144,16 @@ export function scoreTone(score: number): string {
   if (score >= 70) return "border-red-400/25 bg-red-400/10 text-red-300";
   if (score >= 40) return "border-amber-400/25 bg-amber-400/10 text-amber-300";
   return "border-line bg-raised text-muted";
+}
+
+export function phaseLabel(phase: CallPhase): string {
+  return PHASE_LABEL[phase] ?? phase;
+}
+
+/** Confidence as a percentage, for the "still classifying" affordance. */
+export function confidencePercent(confidence: number | null | undefined): string | null {
+  if (typeof confidence !== "number" || Number.isNaN(confidence)) return null;
+  return `${Math.round(Math.max(0, Math.min(1, confidence)) * 100)}%`;
 }
 
 export function fieldLabel(field: string | null): string {

@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { PhaseTrack } from "@/components/PhaseTrack";
 import { Transcript } from "@/components/Transcript";
 import { ErrorNote, Skeleton } from "@/components/ui";
 import { api } from "@/lib/api";
-import type { Call, Case } from "@/lib/types";
+import { callPhase, type Call, type Case } from "@/lib/types";
 import { formatDateTime, formatDuration, relativeTime } from "@/lib/time";
 import { useLiveEvents } from "@/lib/useLiveEvents";
 import { useNow } from "@/lib/useNow";
@@ -19,22 +20,26 @@ export function CallDetail({ callId }: { callId: number }) {
 
   const load = useCallback(() => {
     setError(null);
-    api
+    return api
       .getCall(callId)
-      .then(setCall)
+      .then((next) => setCall(next))
       .catch((cause: Error) => setError(cause.message));
   }, [callId]);
 
-  useEffect(load, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const linkedId = call?.case_id ?? null;
 
   useEffect(() => {
-    if (!call?.case_id) {
+    if (linkedId === null) {
       setLinkedCase(null);
       return;
     }
     let cancelled = false;
     api
-      .getCase(call.case_id)
+      .getCase(linkedId)
       .then((found) => {
         if (!cancelled) setLinkedCase(found);
       })
@@ -44,25 +49,37 @@ export function CallDetail({ callId }: { callId: number }) {
     return () => {
       cancelled = true;
     };
-  }, [call?.case_id]);
+  }, [linkedId]);
 
-  useLiveEvents({
-    "call.updated": (payload) => {
-      if (payload.id === callId) setCall(payload);
+  useLiveEvents(
+    {
+      "call.updated": (payload) => {
+        if (payload.call.id === callId) setCall(payload.call);
+      },
+      "report.filed": (payload) => {
+        if (payload.report.call_id === callId) setLinkedCase(payload.case);
+      },
+      "case.updated": (payload) => {
+        setLinkedCase((previous) => (previous && previous.id === payload.case.id ? payload.case : previous));
+      },
     },
-    "report.filed": (payload) => {
-      if (payload.report.call_id === callId) setLinkedCase(payload.case);
-    },
-    "case.updated": (payload) => {
-      setLinkedCase((previous) => (previous && previous.id === payload.case.id ? payload.case : previous));
-    },
-  });
+    () =>
+      Promise.all([
+        load(),
+        linkedId === null
+          ? Promise.resolve()
+          : api
+              .getCase(linkedId)
+              .then((found) => setLinkedCase(found))
+              .catch(() => undefined),
+      ]),
+  );
 
   if (error) {
     return (
       <div className="flex flex-col gap-4">
         <BackLink />
-        <ErrorNote message={error} onRetry={load} />
+        <ErrorNote message={error} onRetry={() => void load()} />
       </div>
     );
   }
@@ -102,6 +119,7 @@ export function CallDetail({ callId }: { callId: number }) {
             Started <span title={formatDateTime(call.started_at)}>{relativeTime(call.started_at, now)}</span>
             {call.caller_phone ? <span className="font-mono text-faint"> &middot; {call.caller_phone}</span> : null}
           </p>
+          <PhaseTrack phase={callPhase(call)} className="mt-2.5" />
         </div>
 
         {linkedCase ? (

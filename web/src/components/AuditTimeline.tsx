@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { EmptyState, Panel, Skeleton } from "@/components/ui";
 import { api } from "@/lib/api";
 import { EVENT_LABEL, actorLabel, fieldLabel, prettyValue } from "@/lib/labels";
@@ -15,73 +15,59 @@ const KIND_DOT: Record<string, string> = {
   "case.updated": "bg-accent",
   "note.added": "bg-purple-400",
   "call.started": "bg-green-400",
+  "call.phase": "bg-green-400/70",
   "call.ended": "bg-line-strong",
+  "case.escalated": "bg-red-400",
+  "case.routed": "bg-amber-400",
+  "report.filed": "bg-accent/70",
+  "report.merged": "bg-accent/70",
+  "priority.changed": "bg-amber-400/70",
 };
 
 /**
- * The append-only audit trail. Websocket payloads carry the case, not the
- * event row, so a change simply triggers a refetch of the log.
+ * The append-only audit trail.
+ *
+ * REST supplies the history once; after that every row arrives as its own
+ * `event.appended` frame, so the timeline streams instead of refetching the
+ * whole log on every change.
  */
 export function AuditTimeline({ caseId }: { caseId: number }) {
   const [events, setEvents] = useState<CaseEvent[] | null>(null);
-  const seen = useRef<Set<number>>(new Set());
-  const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { flash, flashClass } = useFlash<number>();
   const now = useNow(10_000);
 
   const load = useCallback(
-    (highlight: boolean) => {
+    () =>
       api
         .caseEvents(caseId)
-        .then((rows) => {
-          if (highlight) {
-            for (const row of rows) {
-              if (!seen.current.has(row.id)) flash(row.id);
-            }
-          }
-          seen.current = new Set(rows.map((row) => row.id));
-          setEvents(rows);
-        })
-        .catch(() => setEvents([]));
-    },
-    [caseId, flash],
+        .then((rows) => setEvents(rows))
+        .catch(() => setEvents([])),
+    [caseId],
   );
 
   useEffect(() => {
     setEvents(null);
-    seen.current = new Set();
-    load(false);
-    return () => {
-      if (pending.current) clearTimeout(pending.current);
-    };
+    void load();
   }, [load]);
 
-  const refresh = useCallback(() => {
-    if (pending.current) clearTimeout(pending.current);
-    pending.current = setTimeout(() => load(true), 120);
-  }, [load]);
+  const append = useCallback(
+    (event: CaseEvent) => {
+      if (event.case_id !== caseId) return;
+      setEvents((previous) => {
+        const rows = previous ?? [];
+        // A replayed frame is the same row: match on id, never append twice.
+        if (rows.some((row) => row.id === event.id)) return rows;
+        return [...rows, event];
+      });
+      flash(event.id);
+    },
+    [caseId, flash],
+  );
 
-  useLiveEvents({
-    "case.updated": (payload) => {
-      if (payload.case.id === caseId) refresh();
-    },
-    "case.created": (payload) => {
-      if (payload.id === caseId) refresh();
-    },
-    "call.started": (payload) => {
-      if (payload.case_id === caseId) refresh();
-    },
-    "call.updated": (payload) => {
-      if (payload.case_id === caseId) refresh();
-    },
-  });
+  useLiveEvents({ "event.appended": append }, load);
 
   return (
-    <Panel
-      title="Activity"
-      action={<span className="text-[11px] text-faint">Newest first</span>}
-      bodyClassName={events && events.length > 0 ? "p-0" : "p-0"}
-    >
+    <Panel title="Activity" action={<span className="text-[11px] text-faint">Newest first</span>} bodyClassName="p-0">
       {events === null ? (
         <div className="space-y-3 p-4">
           {Array.from({ length: 3 }).map((_, index) => (
@@ -102,14 +88,13 @@ export function AuditTimeline({ caseId }: { caseId: number }) {
               className={`flex flex-wrap items-baseline gap-x-2 gap-y-1 px-4 py-2.5 ${flashClass(event.id)}`}
             >
               <span
+                aria-hidden
                 className={`mt-1.5 h-1.5 w-1.5 shrink-0 self-start rounded-full ${KIND_DOT[event.kind] ?? "bg-line-strong"}`}
               />
 
-              <span className="text-[12px] font-medium text-muted">
-                {EVENT_LABEL[event.kind] ?? event.kind}
-              </span>
+              <span className="text-[12px] font-medium text-muted">{EVENT_LABEL[event.kind] ?? event.kind}</span>
 
-              {event.kind === "case.updated" && event.field ? (
+              {event.field && event.old_value !== event.new_value ? (
                 <span className="flex min-w-0 flex-wrap items-baseline gap-1.5 text-[13px]">
                   <span className="text-faint">{fieldLabel(event.field)}:</span>
                   <span className="rounded bg-raised px-1.5 py-0.5 text-[12px] text-muted line-through decoration-faint/70">

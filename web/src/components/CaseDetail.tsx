@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuditTimeline } from "@/components/AuditTimeline";
 import { DepartmentTag, EscalationBanner, IssueTag, StatusBadge } from "@/components/Badge";
 import { EnumSelect } from "@/components/EnumSelect";
@@ -10,7 +10,14 @@ import { ReportsPanel } from "@/components/ReportsPanel";
 import { Transcript } from "@/components/Transcript";
 import { ErrorNote, FieldRow, Panel, Skeleton } from "@/components/ui";
 import { api } from "@/lib/api";
-import { PRIORITY_LABEL, PRIORITY_TEXT, STATUS_LABEL, departmentLabel, issueLabel } from "@/lib/labels";
+import {
+  CONFIDENCE_THRESHOLD,
+  PRIORITY_LABEL,
+  PRIORITY_TEXT,
+  STATUS_LABEL,
+  confidencePercent,
+  departmentLabel,
+} from "@/lib/labels";
 import {
   CASE_STATUSES,
   PRIORITIES,
@@ -65,39 +72,52 @@ export function CaseDetail({ caseId }: { caseId: number }) {
   const { flash, flashed } = useFlash<string>();
   const now = useNow(10_000);
 
+  /**
+   * Fields with a staff write in flight. The websocket echo of a case is a
+   * snapshot from before our PATCH landed, so applying it wholesale would
+   * visibly undo the edit the user just made. Locally-owned fields win until
+   * the PATCH resolves.
+   */
+  const pending = useRef(new Set<string>());
+
   const load = useCallback(() => {
     setLoadError(null);
-    api
+    return api
       .getCase(caseId)
-      .then(setItem)
+      .then((next) => setItem(next))
       .catch((cause: Error) => setLoadError(cause.message));
   }, [caseId]);
 
-  useEffect(load, [load]);
+  const loadCalls = useCallback(() => {
+    setCallsLoading(true);
+    return api
+      .caseCalls(caseId)
+      .then((calls) => setCall(newestCall(calls)))
+      .catch(() => setCall(null))
+      .finally(() => setCallsLoading(false));
+  }, [caseId]);
 
   useEffect(() => {
-    let cancelled = false;
-    setCallsLoading(true);
-    api
-      .caseCalls(caseId)
-      .then((calls) => {
-        if (!cancelled) setCall(newestCall(calls));
-      })
-      .catch(() => {
-        if (!cancelled) setCall(null);
-      })
-      .finally(() => {
-        if (!cancelled) setCallsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [caseId]);
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    void loadCalls();
+  }, [loadCalls]);
 
   const applyCase = useCallback(
     (next: Case, changed: string[]) => {
-      setItem(next);
-      for (const field of changed) flash(field);
+      setItem((previous) => {
+        if (!previous) return next;
+        if (pending.current.size === 0) return next;
+        const merged = { ...next } as Record<string, unknown>;
+        const held = previous as unknown as Record<string, unknown>;
+        for (const field of pending.current) merged[field] = held[field];
+        return merged as unknown as Case;
+      });
+      for (const field of changed) {
+        if (!pending.current.has(field)) flash(field);
+      }
     },
     [flash],
   );
@@ -116,31 +136,38 @@ export function CaseDetail({ caseId }: { caseId: number }) {
     [caseId],
   );
 
-  useLiveEvents({
-    "case.updated": (payload) => {
-      if (payload.case.id === caseId) applyCase(payload.case, payload.changed);
+  useLiveEvents(
+    {
+      "case.updated": (payload) => {
+        if (payload.case.id === caseId) applyCase(payload.case, payload.changed);
+      },
+      "case.escalated": (payload) => {
+        if (payload.id === caseId) applyCase(payload, ["escalated", "escalation_reason", "priority_score"]);
+      },
+      "report.filed": (payload) => {
+        if (payload.case.id === caseId) applyCase(payload.case, ["report_count", "priority_score"]);
+      },
+      "call.started": applyCall,
+      "call.updated": (payload) => applyCall(payload.call),
     },
-    "case.escalated": (payload) => {
-      if (payload.id === caseId) applyCase(payload, ["escalated", "escalation_reason", "priority_score"]);
-    },
-    "report.filed": (payload) => {
-      if (payload.case.id === caseId) applyCase(payload.case, ["report_count", "priority_score"]);
-    },
-    "call.started": applyCall,
-    "call.updated": applyCall,
-  });
+    () => Promise.all([load(), loadCalls()]),
+  );
 
   const patch = async (change: CasePatch, key: "status" | "priority") => {
     if (!item) return;
+    const fields = Object.keys(change);
     const previous = item;
     setSaving(key);
     setActionError(null);
+    for (const field of fields) pending.current.add(field);
     setItem({ ...item, ...change });
     try {
       const updated = await api.updateCase(item.id, change);
-      setItem(updated);
+      for (const field of fields) pending.current.delete(field);
+      applyCase(updated, []);
     } catch (cause) {
-      setItem(previous);
+      for (const field of fields) pending.current.delete(field);
+      setItem((current) => (current ? ({ ...current, ...pickFields(previous, fields) } as Case) : current));
       setActionError(cause instanceof Error ? cause.message : "Update failed");
     } finally {
       setSaving(null);
@@ -155,7 +182,7 @@ export function CaseDetail({ caseId }: { caseId: number }) {
     setActionError(null);
     try {
       const updated = await api.escalateCase(item.id, text);
-      setItem(updated);
+      applyCase(updated, []);
       setReason("");
       setReasonOpen(false);
       flash("escalated");
@@ -172,7 +199,7 @@ export function CaseDetail({ caseId }: { caseId: number }) {
     return (
       <div className="flex flex-col gap-4">
         <BackLink />
-        <ErrorNote message={loadError} onRetry={load} />
+        <ErrorNote message={loadError} onRetry={() => void load()} />
       </div>
     );
   }
@@ -196,6 +223,8 @@ export function CaseDetail({ caseId }: { caseId: number }) {
   }
 
   const escalated = isEscalated(item);
+  const settling = flashed.has("issue_type") && item.issue_type !== null;
+  const confidence = confidencePercent(item.issue_type_confidence);
 
   return (
     <div className="flex flex-col gap-5">
@@ -206,7 +235,7 @@ export function CaseDetail({ caseId }: { caseId: number }) {
           <div className="flex flex-wrap items-center gap-2.5">
             <h1 className="font-mono text-[20px] leading-7 font-semibold tracking-tight">{item.case_number}</h1>
             <StatusBadge status={item.status} className={flashed.has("status") ? "flash" : ""} />
-            <IssueTag issue={item.issue_type} />
+            <IssueTag issue={item.issue_type} confidence={item.issue_type_confidence} settling={settling} />
           </div>
           <p className="mt-1 max-w-2xl text-[13px] leading-5 text-muted">
             {item.description || "No description captured yet."}
@@ -291,12 +320,8 @@ export function CaseDetail({ caseId }: { caseId: number }) {
           </span>
         </Stat>
         <Stat label="Priority score" flashing={flashed.has("priority_score")}>
-          <span className={`tabular-nums ${PRIORITY_TEXT[item.priority]}`}>
-            {item.priority_score ?? 0}
-          </span>
-          <span className="text-[12px] font-normal text-faint">
-            {PRIORITY_LABEL[item.priority].toLowerCase()}
-          </span>
+          <span className={`tabular-nums ${PRIORITY_TEXT[item.priority]}`}>{item.priority_score ?? 0}</span>
+          <span className="text-[12px] font-normal text-faint">{PRIORITY_LABEL[item.priority].toLowerCase()}</span>
         </Stat>
         <Stat label="Department" flashing={flashed.has("department")}>
           <span className="truncate text-[14px]">{departmentLabel(item.department)}</span>
@@ -312,8 +337,18 @@ export function CaseDetail({ caseId }: { caseId: number }) {
         <div className="flex min-w-0 flex-col gap-5">
           <Panel title="Incident">
             <dl className="flex flex-col gap-0.5">
-              <FieldRow label="Issue type" flashing={flashed.has("issue_type")}>
-                {issueLabel(item.issue_type)}
+              <FieldRow
+                label="Issue type"
+                flashing={flashed.has("issue_type") || flashed.has("issue_type_confidence")}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <IssueTag issue={item.issue_type} confidence={item.issue_type_confidence} settling={settling} />
+                  {item.issue_type === null && confidence ? (
+                    <span className="text-[12px] text-faint">
+                      {confidence} confident, needs {Math.round(CONFIDENCE_THRESHOLD * 100)}% to commit
+                    </span>
+                  ) : null}
+                </div>
               </FieldRow>
               <FieldRow label="Location" flashing={flashed.has("location")}>
                 {caseLocation(item) || <span className="text-faint">Not captured</span>}
@@ -346,6 +381,13 @@ export function CaseDetail({ caseId }: { caseId: number }) {
       <AuditTimeline caseId={caseId} />
     </div>
   );
+}
+
+function pickFields(source: Case, fields: string[]): Record<string, unknown> {
+  const held = source as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const field of fields) out[field] = held[field];
+  return out;
 }
 
 function BackLink() {
