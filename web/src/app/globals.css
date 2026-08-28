@@ -194,10 +194,60 @@
   animation-delay: 0.3s;
 }
 
+/* --- Call console (light surface) ------------------------------------- *
+ * The resident console is the one light page in a dark app, so its motion
+ * lives here rather than reusing the dashboard's blue-on-black flash. */
+
+@keyframes cc-flash {
+  0% {
+    background-color: rgb(37 99 235 / 0.11);
+  }
+  40% {
+    background-color: rgb(37 99 235 / 0.08);
+  }
+  100% {
+    background-color: rgb(37 99 235 / 0);
+  }
+}
+
+.cc-flash {
+  animation: cc-flash 1.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* A field being confirmed is a moment worth noticing, so the check lands
+   rather than appearing. */
+@keyframes cc-check-in {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.cc-check-in {
+  animation: cc-check-in 0.34s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* The console's scrollbars sit on white, not on the dashboard's near-black. */
+.cc-light .scroll-slim {
+  scrollbar-color: #cbd5e1 transparent;
+}
+.cc-light .scroll-slim::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+}
+.cc-light .scroll-slim::-webkit-scrollbar-thumb:hover {
+  background-color: #94a3b8;
+}
+
 /* Motion is decoration here: every state it conveys is also carried by colour,
    text or a border, so it can be switched off wholesale. */
 @media (prefers-reduced-motion: reduce) {
   .flash,
+  .cc-flash,
+  .cc-check-in,
   .rise-in,
   .live-dot,
   .settle-ring,

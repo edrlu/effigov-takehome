@@ -112,6 +112,7 @@ export const EVENT_LABEL: Record<EventKind, string> = {
   "note.added": "Note added",
   "call.started": "Call started",
   "call.ended": "Call ended",
+  "call.updated": "Call updated",
   "report.filed": "Report filed",
   "report.merged": "Report merged",
   "case.escalated": "Escalated",
