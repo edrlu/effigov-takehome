@@ -45,7 +45,7 @@ NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 # without one are rejected, and rightly so: this is a free service run for
 # everyone and an anonymous flood of queries is how it stops being one.
 USER_AGENT = (
-    "EffiGov311Intake/1.0 (City of Berkeley 311 voice intake demo; "
+    "Emma311Intake/1.0 (City of Berkeley 311 voice intake demo; "
     "+https://github.com/edrlu/effigov-takehome)"
 )
 

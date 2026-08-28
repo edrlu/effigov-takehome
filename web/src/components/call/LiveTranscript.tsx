@@ -105,7 +105,9 @@ export function LiveTranscript({ call }: { call: Call | null }) {
   const tail = useTailFollow(`${lines.length}:${lines.at(-1)?.text.length ?? 0}:${agentSpeaking}`);
 
   return (
-    <ConsoleCard className="flex min-h-0 flex-col px-5 py-[18px]">
+    // A fixed rectangle, empty or full. The tail-follow behaviour is unchanged:
+    // it pins to the newest line unless the reader has scrolled up.
+    <ConsoleCard className="flex h-[420px] min-h-0 flex-col px-5 py-[18px] xl:h-auto xl:flex-1">
       <CardHeading
         title="Live Transcript"
         action={
@@ -122,10 +124,10 @@ export function LiveTranscript({ call }: { call: Call | null }) {
       <div
         ref={tail.ref}
         onScroll={tail.onScroll}
-        className="scroll-slim mt-3.5 -mr-2 max-h-[360px] min-h-[220px] flex-1 overflow-y-auto pr-2"
+        className="scroll-slim mt-3.5 -mr-2 min-h-0 flex-1 overflow-y-auto pr-2"
       >
         {lines.length === 0 ? (
-          <p className="py-14 text-center text-[13px] text-slate-400">
+          <p className="flex h-full items-center justify-center px-6 text-center text-[13px] text-slate-400">
             {loading
               ? "Loading the transcript"
               : call

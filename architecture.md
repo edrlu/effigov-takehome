@@ -1,4 +1,4 @@
-# EffiGov 311: architecture
+# Emma311: architecture
 
 The system is three processes over one database, and every fact the voice agent learns is written straight through to it.
 

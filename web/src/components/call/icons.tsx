@@ -33,14 +33,6 @@ export function PhoneIcon(props: IconProps) {
   );
 }
 
-export function PhoneSolidIcon(props: IconProps) {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden {...props}>
-      <path d="M6.6 2.5h-.9A3.7 3.7 0 0 0 2 6.2C2 15 9 22 17.8 22a3.7 3.7 0 0 0 3.7-3.7v-.9a2.3 2.3 0 0 0-1.75-2.24l-3.3-.82a2.3 2.3 0 0 0-2.36.87l-.36.48a10.6 10.6 0 0 1-3.35-3.35l.48-.36a2.3 2.3 0 0 0 .87-2.36l-.82-3.3A2.3 2.3 0 0 0 6.6 2.5Z" />
-    </svg>
-  );
-}
-
 export function PersonIcon(props: IconProps) {
   return (
     <Outline {...props}>

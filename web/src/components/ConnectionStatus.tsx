@@ -12,10 +12,10 @@ import { useNow } from "@/lib/useNow";
  * from `Live`: replaying an outbox is not the same as being current.
  */
 const COPY: Record<LiveStatus, { label: string; dot: string; text: string; pulse: boolean }> = {
-  connecting: { label: "Connecting", dot: "bg-faint", text: "text-faint", pulse: false },
-  "catching-up": { label: "Catching up", dot: "bg-accent", text: "text-accent", pulse: true },
-  live: { label: "Live", dot: "bg-green-400", text: "text-green-300", pulse: true },
-  reconnecting: { label: "Reconnecting", dot: "bg-amber-400", text: "text-amber-300", pulse: false },
+  connecting: { label: "Connecting", dot: "bg-slate-300", text: "text-slate-400", pulse: false },
+  "catching-up": { label: "Catching up", dot: "bg-blue-600", text: "text-blue-600", pulse: true },
+  live: { label: "Live", dot: "bg-emerald-500", text: "text-emerald-600", pulse: true },
+  reconnecting: { label: "Reconnecting", dot: "bg-amber-500", text: "text-amber-600", pulse: false },
 };
 
 function staleness(downSince: number, now: number): string {
@@ -50,7 +50,7 @@ export function ConnectionStatus() {
         aria-label={down ? `${announcement}. Retry now.` : announcement}
         className={`flex h-7 items-center gap-2 rounded-md border px-2 text-[12px] transition-colors ${
           down
-            ? "border-amber-400/35 bg-amber-400/10 hover:border-amber-400/60 hover:bg-amber-400/15"
+            ? "border-amber-300 bg-amber-50 hover:border-amber-400 hover:bg-amber-100"
             : "cursor-default border-transparent"
         }`}
       >
@@ -59,7 +59,7 @@ export function ConnectionStatus() {
           {copy.label}
         </span>
         {stale ? (
-          <span aria-hidden className="tabular-nums text-amber-200/80">
+          <span aria-hidden className="tabular-nums text-amber-600">
             {stale} stale
           </span>
         ) : null}
