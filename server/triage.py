@@ -35,6 +35,28 @@ def route(issue_type: IssueType | None) -> Department:
 
 
 # --------------------------------------------------------------------------
+# Classification confidence
+# --------------------------------------------------------------------------
+
+# Below this, a guess at the category is not worth acting on. Dispatching a
+# sanitation crew to a water leak costs more than leaving a case unclassified
+# for another minute, so a hesitant classifier is treated as no classifier.
+ISSUE_TYPE_CONFIDENCE_THRESHOLD = 0.6
+
+
+def classification_accepted(confidence: float | None) -> bool:
+    """Whether a proposed issue type is sure enough to act on.
+
+    ``None`` means the caller of the API did not measure confidence at all -
+    a staff member typing a category by hand, or the seed script. Their
+    judgement is taken at face value; only a stated low confidence is refused.
+    """
+    if confidence is None:
+        return True
+    return confidence >= ISSUE_TYPE_CONFIDENCE_THRESHOLD
+
+
+# --------------------------------------------------------------------------
 # Deduplication
 # --------------------------------------------------------------------------
 

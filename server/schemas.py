@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from server.models import CaseStatus, Department, IssueType, Priority
+from server.models import CallPhase, CaseStatus, Department, IssueType, Priority
 
 
 class CaseCreate(BaseModel):
     issue_type: IssueType | None = None
+    issue_type_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     department: Department | None = None
     location: str | None = None
     description: str | None = None
@@ -18,6 +19,7 @@ class CaseCreate(BaseModel):
 
 class CaseUpdate(BaseModel):
     issue_type: IssueType | None = None
+    issue_type_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     department: Department | None = None
     location: str | None = None
     description: str | None = None
@@ -36,6 +38,7 @@ class EscalateRequest(BaseModel):
 
 class ReportCreate(BaseModel):
     issue_type: IssueType | None = None
+    issue_type_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     location: str | None = None
     description: str | None = None
     reporter_name: str | None = None
@@ -58,11 +61,19 @@ class CallUpdate(BaseModel):
     case_id: int | None = None
     report_id: int | None = None
     status: str | None = None
+    phase: CallPhase | None = None
     summary: str | None = None
     caller_phone: str | None = None
 
 
 class TurnCreate(BaseModel):
+    role: str
+    text: str
+
+
+class InterimCreate(BaseModel):
+    """A partial utterance. Broadcast, never stored."""
+
     role: str
     text: str
 

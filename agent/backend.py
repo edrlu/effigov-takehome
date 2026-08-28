@@ -39,6 +39,16 @@ class CaseAPI:
     async def add_turn(self, call_id: int, role: str, text: str) -> None:
         await self._client.post(f"/api/calls/{call_id}/turns", json={"role": role, "text": text})
 
+    async def add_interim(self, call_id: int, role: str, text: str) -> None:
+        """Stream a partial utterance. Best effort: a dropped delta is invisible,
+        because the final turn that follows carries the whole thing anyway."""
+        await self._client.post(
+            f"/api/calls/{call_id}/interim", json={"role": role, "text": text}
+        )
+
+    async def set_phase(self, call_id: int, phase: str) -> dict[str, Any]:
+        return await self.update_call(call_id, phase=phase)
+
     # -- reports ----------------------------------------------------------
     async def file_report(self, **fields: Any) -> dict[str, Any]:
         """Returns {report, case, merged}. The backend decides whether this is a

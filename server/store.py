@@ -4,23 +4,39 @@ The invariant this module exists to hold: *every* change to a case writes an
 ``Event`` row and broadcasts the same change on the websocket hub. Handlers
 never mutate a model directly, so the audit log and the live dashboard can
 never drift from the database.
+
+Two rules make that broadcast trustworthy rather than merely present.
+
+*Ordering is durable.* A frame is written to the ``Outbox`` and committed
+before it is broadcast, and the outbox row's primary key is the frame's
+``seq``. A client that reconnects replays the rows it missed instead of
+guessing, and a restart of the process does not reset the counter.
+
+*Silence means nothing happened.* Every update frame carries the list of fields
+that actually moved, and an update where nothing moved publishes no frame at
+all. The voice agent PATCHes the same case a dozen times a call; the dashboard
+should flicker only when there is something to see.
 """
 
 from __future__ import annotations
 
+import json
+import threading
 from typing import Any
 
 from sqlmodel import Session, select
 
 from server import triage
-from server.hub import hub
+from server.hub import PROTOCOL_VERSION, hub
 from server.models import (
     Call,
+    CallPhase,
     CallStatus,
     Case,
     CaseStatus,
     Event,
     IssueType,
+    Outbox,
     Report,
     Turn,
     utcnow,
@@ -29,6 +45,7 @@ from server.models import (
 # Fields the voice agent and the dashboard are allowed to set on a case.
 MUTABLE_CASE_FIELDS = {
     "issue_type",
+    "issue_type_confidence",
     "department",
     "location",
     "description",
@@ -37,6 +54,17 @@ MUTABLE_CASE_FIELDS = {
     "notes",
     "summary",
 }
+
+MUTABLE_REPORT_FIELDS = ("reporter_name", "reporter_phone", "description")
+
+# How much history a reconnecting dashboard can replay. Roughly an hour of a
+# busy call centre: long enough that a laptop lid closed over lunch still
+# resumes, short enough that the table stays small.
+OUTBOX_RETENTION = 2000
+
+# ``seq`` must be gap-free and strictly increasing, so reading the high-water
+# mark and inserting the next row is one indivisible step.
+_SEQ_LOCK = threading.Lock()
 
 
 def serialize(obj: Any) -> dict[str, Any]:
@@ -47,6 +75,87 @@ def serialize(obj: Any) -> dict[str, Any]:
         elif hasattr(value, "value"):
             data[key] = value.value
     return data
+
+
+# --------------------------------------------------------------------------
+# The publish path
+# --------------------------------------------------------------------------
+
+
+def _emit(session: Session, frames: list[tuple[str, Any]]) -> list[dict[str, Any]]:
+    """Persist each frame in the outbox, then broadcast it.
+
+    Persist-then-broadcast, never the other way round: a frame a client saw but
+    cannot replay is worse than one that is late.
+    """
+    if not frames:
+        return []
+
+    sent: list[dict[str, Any]] = []
+    with _SEQ_LOCK:
+        for type_, payload in frames:
+            row = Outbox(type=type_, frame="")
+            session.add(row)
+            session.flush()  # the database assigns seq
+            frame = {
+                "v": PROTOCOL_VERSION,
+                "seq": row.seq,
+                "ts": row.ts.isoformat(),
+                "type": type_,
+                "payload": payload,
+            }
+            row.frame = json.dumps(frame)
+            session.add(row)
+            sent.append(frame)
+        _trim_outbox(session)
+        _commit_without_expiring(session)
+
+    for frame in sent:
+        hub.broadcast(frame)
+    return sent
+
+
+def _commit_without_expiring(session: Session) -> None:
+    """Commit the outbox rows without invalidating the caller's objects.
+
+    The domain change is already committed by the time we get here, so this
+    commit is bookkeeping. Letting it expire the case the handler is about to
+    serialize would make publishing a frame corrupt the response to the request
+    that caused it.
+    """
+    previous = session.expire_on_commit
+    session.expire_on_commit = False
+    try:
+        session.commit()
+    finally:
+        session.expire_on_commit = previous
+
+
+def _trim_outbox(session: Session) -> None:
+    """Keep only the most recent window. Old history helps nobody resume."""
+    newest = session.exec(select(Outbox.seq).order_by(Outbox.seq.desc())).first()
+    if newest is None or newest <= OUTBOX_RETENTION:
+        return
+    cutoff = newest - OUTBOX_RETENTION
+    for row in session.exec(select(Outbox).where(Outbox.seq <= cutoff)).all():
+        session.delete(row)
+
+
+def publish(session: Session, type_: str, payload: Any) -> None:
+    """Broadcast one domain frame, preceded by the audit rows that explain it.
+
+    Audit rows go first so a dashboard applying frames in order sees the
+    reasons before the result.
+    """
+    frames: list[tuple[str, Any]] = [
+        ("event.appended", row) for row in _drain_events(session)
+    ]
+    frames.append((type_, payload))
+    _emit(session, frames)
+
+
+def _drain_events(session: Session) -> list[dict[str, Any]]:
+    return session.info.pop("pending_events", [])
 
 
 def _log(
@@ -70,6 +179,10 @@ def _log(
         actor=actor,
     )
     session.add(event)
+    # Flush to get the id, then keep a snapshot rather than the instance: the
+    # caller's own commit would expire the object before it is ever published.
+    session.flush()
+    session.info.setdefault("pending_events", []).append(serialize(event))
     return event
 
 
@@ -108,8 +221,23 @@ def _reprice(session: Session, case: Case, *, actor: str = "system") -> list[str
 # --------------------------------------------------------------------------
 
 
+def _gated_issue_type(data: dict[str, Any]) -> dict[str, Any]:
+    """Drop a classification the classifier itself does not believe.
+
+    The confidence still gets stored. A case the city knows it cannot yet
+    categorise is a different thing from a case nobody has looked at, and the
+    dashboard should be able to tell them apart.
+    """
+    payload = {k: v for k, v in data.items() if k in MUTABLE_CASE_FIELDS}
+    if "issue_type" not in payload:
+        return payload
+    if not triage.classification_accepted(payload.get("issue_type_confidence")):
+        payload.pop("issue_type")
+    return payload
+
+
 def create_case(session: Session, data: dict[str, Any], *, actor: str = "voice_agent") -> Case:
-    case = Case(**{k: v for k, v in data.items() if k in MUTABLE_CASE_FIELDS})
+    case = Case(**_gated_issue_type(data))
     if case.department is None or data.get("department") is None:
         case.department = triage.route(case.issue_type)
     session.add(case)
@@ -130,7 +258,7 @@ def create_case(session: Session, data: dict[str, Any], *, actor: str = "voice_a
     session.commit()
     session.refresh(case)
 
-    hub.publish("case.created", serialize(case))
+    publish(session, "case.created", serialize(case))
     return case
 
 
@@ -142,9 +270,10 @@ def update_case(
     actor: str = "voice_agent",
 ) -> Case:
     """Apply a partial update, logging one event per field that actually moved."""
+    gated = _gated_issue_type(data)
     changed: list[str] = []
-    for field, value in data.items():
-        if field not in MUTABLE_CASE_FIELDS or value is None:
+    for field, value in gated.items():
+        if value is None:
             continue
         old = getattr(case, field)
         if old == value:
@@ -162,7 +291,7 @@ def update_case(
         )
 
     # A corrected issue type re-routes the case. Routing is never typed by hand.
-    if "issue_type" in changed and "department" not in data:
+    if "issue_type" in changed and "department" not in gated:
         department = triage.route(case.issue_type)
         if department != case.department:
             _log(
@@ -181,6 +310,8 @@ def update_case(
         changed += _reprice(session, case, actor=actor)
 
     if not changed:
+        # Nothing moved. The agent re-sending what it already told us is not
+        # news, so the dashboard hears nothing.
         return case
 
     case.updated_at = utcnow()
@@ -188,7 +319,7 @@ def update_case(
     session.commit()
     session.refresh(case)
 
-    hub.publish("case.updated", {"case": serialize(case), "changed": changed})
+    publish(session, "case.updated", {"case": serialize(case), "changed": changed})
     return case
 
 
@@ -211,7 +342,7 @@ def escalate(session: Session, case: Case, reason: str, *, actor: str = "voice_a
     session.commit()
     session.refresh(case)
 
-    hub.publish("case.escalated", serialize(case))
+    publish(session, "case.escalated", serialize(case))
     return case
 
 
@@ -224,7 +355,7 @@ def append_note(session: Session, case: Case, note: str, *, actor: str = "voice_
     session.commit()
     session.refresh(case)
 
-    hub.publish("case.updated", {"case": serialize(case), "changed": ["notes"]})
+    publish(session, "case.updated", {"case": serialize(case), "changed": ["notes"]})
     return case
 
 
@@ -262,6 +393,7 @@ def file_report(
     issue_type: IssueType | None,
     location: str | None,
     description: str | None,
+    issue_type_confidence: float | None = None,
     reporter_name: str | None = None,
     reporter_phone: str | None = None,
     call_id: int | None = None,
@@ -272,7 +404,14 @@ def file_report(
 
     Returns ``(report, case, merged)``. ``merged`` is what the agent reads back
     to the caller: "we already have that one, I have added your report to it".
+
+    A classification below the confidence threshold is not merged on. Guessing
+    "pothole" at 0.3 and folding the caller into somebody else's pothole case
+    would hide their report behind a coin flip.
     """
+    if not triage.classification_accepted(issue_type_confidence):
+        issue_type = None
+
     open_cases = session.exec(
         select(Case).where(Case.status != CaseStatus.resolved).order_by(Case.created_at.desc())
     ).all()
@@ -286,6 +425,7 @@ def file_report(
             session,
             {
                 "issue_type": issue_type,
+                "issue_type_confidence": issue_type_confidence,
                 "location": location,
                 "description": description,
             },
@@ -322,7 +462,8 @@ def file_report(
     session.refresh(case)
     session.refresh(report)
 
-    hub.publish(
+    publish(
+        session,
         "report.filed",
         {
             "report": serialize(report),
@@ -335,17 +476,27 @@ def file_report(
 
 
 def update_report(session: Session, report: Report, data: dict[str, Any]) -> Report:
-    for field in ("reporter_name", "reporter_phone", "description"):
-        if data.get(field) is not None:
-            setattr(report, field, data[field])
+    """Save corrected reporter details, and say which ones actually changed."""
+    changed: list[str] = []
+    for field in MUTABLE_REPORT_FIELDS:
+        value = data.get(field)
+        if value is None or getattr(report, field) == value:
+            continue
+        setattr(report, field, value)
+        changed.append(field)
+
+    if not changed:
+        return report
+
     session.add(report)
     session.commit()
     session.refresh(report)
 
-    case = session.get(Case, report.case_id)
-    hub.publish("report.updated", {"report": serialize(report), "case_id": report.case_id})
-    if case:
-        hub.publish("case.updated", {"case": serialize(case), "changed": []})
+    publish(
+        session,
+        "report.updated",
+        {"report": serialize(report), "case_id": report.case_id, "changed": changed},
+    )
     return report
 
 
@@ -364,34 +515,117 @@ def start_call(session: Session, room: str, caller_phone: str | None = None) -> 
     session.commit()
     session.refresh(call)
 
-    hub.publish("call.started", serialize(call))
+    publish(session, "call.started", serialize(call))
+    return call
+
+
+def set_phase(
+    session: Session,
+    call: Call,
+    phase: CallPhase | str,
+    *,
+    actor: str = "voice_agent",
+) -> Call:
+    """Move a live call to its next phase, or do nothing if it is already there.
+
+    A phase change is its own frame. Staff watching the board are reading one
+    signal - what is happening on this call right now - and burying it in a
+    multi-field update makes it something they have to go looking for.
+    """
+    new = CallPhase(phase)
+    if call.phase == new:
+        return call
+
+    _log(
+        session,
+        kind="call.phase",
+        call_id=call.id,
+        case_id=call.case_id,
+        field="phase",
+        old=call.phase,
+        new=new,
+        actor=actor,
+    )
+    call.phase = new
+    session.add(call)
+    session.commit()
+    session.refresh(call)
+
+    publish(session, "call.updated", {"call": serialize(call), "changed": ["phase"]})
     return call
 
 
 def update_call(session: Session, call: Call, data: dict[str, Any]) -> Call:
-    for field in ("case_id", "report_id", "summary", "caller_phone"):
-        if data.get(field) is not None:
-            setattr(call, field, data[field])
-
     status = data.get("status")
-    if status in (CallStatus.completed, CallStatus.completed.value):
+    completing = status in (CallStatus.completed, CallStatus.completed.value)
+
+    # Hanging up ends the call whatever else the caller of this function said.
+    if data.get("phase") is not None:
+        call = set_phase(session, call, data["phase"])
+    if completing:
+        call = set_phase(session, call, CallPhase.ended, actor="system")
+
+    changed: list[str] = []
+    for field in ("case_id", "report_id", "summary", "caller_phone"):
+        value = data.get(field)
+        if value is None or getattr(call, field) == value:
+            continue
+        setattr(call, field, value)
+        changed.append(field)
+
+    if completing and call.status != CallStatus.completed:
         call.status = CallStatus.completed
         call.ended_at = utcnow()
+        changed += ["status", "ended_at"]
         _log(session, kind="call.ended", call_id=call.id, case_id=call.case_id, actor="system")
+
+    if not changed:
+        return call
 
     session.add(call)
     session.commit()
     session.refresh(call)
 
-    hub.publish("call.updated", serialize(call))
+    publish(session, "call.updated", {"call": serialize(call), "changed": changed})
     return call
 
 
+def next_turn_seq(session: Session, call_id: int) -> int:
+    """The number the next final turn on this call will carry.
+
+    Interim frames are broadcast under it before the turn exists, which is what
+    lets the dashboard replace a provisional line with the real one.
+    """
+    latest = session.exec(
+        select(Turn.turn_seq).where(Turn.call_id == call_id).order_by(Turn.turn_seq.desc())
+    ).first()
+    return (latest or 0) + 1
+
+
 def add_turn(session: Session, call: Call, role: str, text: str) -> Turn:
-    turn = Turn(call_id=call.id, role=role, text=text)
+    turn = Turn(call_id=call.id, turn_seq=next_turn_seq(session, call.id), role=role, text=text)
     session.add(turn)
     session.commit()
     session.refresh(turn)
 
-    hub.publish("transcript.turn", serialize(turn))
+    publish(session, "transcript.turn", serialize(turn))
     return turn
+
+
+def add_interim(session: Session, call: Call, role: str, text: str) -> dict[str, Any]:
+    """Broadcast a half-spoken utterance without writing it down.
+
+    Interim speech is a guess the recognizer is still revising, so it is
+    streamed and forgotten. ``text`` is always the full utterance so far: the
+    dashboard replaces the provisional line, it never concatenates, because a
+    revised guess can be shorter than the one before it.
+    """
+    payload = {
+        "call_id": call.id,
+        "turn_seq": next_turn_seq(session, call.id),
+        "role": role,
+        "text": text,
+        "final": False,
+    }
+    publish(session, "transcript.delta", payload)
+    return payload

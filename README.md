@@ -44,21 +44,33 @@ They are also the only part of the system with real unit tests, because they are
 **Every write goes through `server/store.py`**, which does three things together: update the row, append an `Event` to the audit log, and broadcast the change on the websocket hub.
 That single choke point is why the audit trail is complete and why the dashboard never has to poll.
 
+**The live stream is durable and resumable.**
+Every frame is written to an `Outbox` row and committed *before* it is broadcast, and that row's primary key is the frame's `seq`: strictly increasing, gap-free, and unchanged by a restart of the API.
+A dashboard reconnects with `/ws?since=<last seq it saw>` and gets back exactly the frames it missed, replayed from the stored JSON rather than re-derived from current rows, because a replay is history and not a fresh snapshot.
+When it asks for something the server can no longer provide - a `since` from a rebuilt database, or one older than the retained window - the server says `resume: false` and the client refetches over REST instead of trusting state it cannot verify.
+
+**One slow dashboard is its own problem.**
+Each websocket connection owns a bounded queue drained by its own writer task, so a client on a bad network backs up alone instead of stalling the broadcast for everyone else and for the voice agent's writes.
+When its queue overflows the server drops that client's backlog, sends `resync_required`, and leaves the socket open.
+A dropped frame is recoverable; a stalled broadcast is not.
+
 **The agent files early and patches often.**
 It calls `file_report` as soon as it knows what and where, then PATCHes name, phone, and detail onto the case as the caller supplies them.
 A PATCH carries only the fields that actually moved, and the backend broadcasts the list of changed field names, so the dashboard highlights exactly what just changed instead of re-rendering the record.
+A PATCH where nothing moved publishes no frame at all, so the agent re-sending what it already saved is silent rather than a flicker on the board.
 
 ## Data model
 
 ```
-Case                     Report                  Call            Event
-  case_number              case_id                 room            case_id
-  issue_type               call_id                 case_id         kind
-  department               reporter_name           report_id       field
-  location                 reporter_phone          status          old_value
-  description              description             summary         new_value
-  status                   created_at              started_at      actor
-  priority                                         ended_at        created_at
+Case                       Report            Call        Turn       Event      Outbox
+  case_number                case_id           room        call_id    case_id    seq
+  issue_type                 call_id           case_id     turn_seq   kind       type
+  issue_type_confidence      reporter_name     report_id   role       field      ts
+  department                 reporter_phone    status      text       old_value  frame
+  location                   description       phase       created_at new_value
+  description                created_at        summary                actor
+  status                                       started_at             created_at
+  priority                                     ended_at
   priority_score
   report_count
   escalated
@@ -68,9 +80,27 @@ Case                     Report                  Call            Event
 - `Case` - one civic incident, no matter how many people report it.
 - `Report` - one resident's account, and how to reach them.
 - `Call` - one voice session. Produces at most one report. Exists from the moment the room opens, which is why a call shows up in the dashboard before anyone knows what it is about.
-- `Event` - append-only audit log: which field changed, from what, to what, by whom.
+- `Turn` - one *final* line of transcript, numbered per call by `turn_seq`. Interim speech is never stored.
+- `Event` - append-only audit log: which field changed, from what, to what, by whom. Every row is streamed as it is written, so the timeline fills in without refetching.
+- `Outbox` - append-only log of every frame broadcast, and the ordering truth for the live stream.
 
-## The three rules in `server/triage.py`
+`Case.status` and `Call.status` are the coarse lifecycles. `Call.phase` - `greeting, gathering, filed, wrapping, ended` - is the fine-grained progression staff actually watch, and the voice agent drives it as the conversation moves.
+
+### Transcript, as it is being spoken
+
+A `Turn` is durable and final. Interim speech is not: it is a guess the recognizer is still revising, so it is broadcast as a `transcript.delta` frame carrying the `turn_seq` the eventual final turn will use, and then forgotten.
+The dashboard renders the delta as a provisional line and replaces it when the `transcript.turn` with the same `(call_id, turn_seq)` arrives.
+A delta always carries the whole utterance so far rather than an incremental suffix, because a revised guess can be *shorter* than the one before it, and a client that concatenates would end up with a sentence the caller never said.
+
+### Migrating an existing database
+
+`init_db` runs an additive migration before `create_all`: it reads each table's columns and `ALTER TABLE ADD COLUMN`s the ones the running code expects but an older file lacks, then backfills them.
+A call that already hung up gets `phase = ended` rather than the default, and old turns recover their `turn_seq` from their insertion order.
+
+Additive rather than "delete the file and start again", because `effigov.db` is gitignored but it is also the demo's memory: wiping it on every schema change throws away the cases a rehearsal just built.
+Nothing is dropped or rewritten, so an old database keeps working and a downgrade loses no data. Full migrations are a Postgres-and-Alembic problem, and this is deliberately not that.
+
+## The rules in `server/triage.py`
 
 **Routing.** Issue type maps to a department. A corrected issue type re-routes the case automatically and logs a `case.routed` event.
 
@@ -81,6 +111,11 @@ The threshold is deliberately conservative: a false merge hides a resident's rep
 **Priority.** `severity x 10 + 15 per corroborating report + 1 per day of age (capped at 10) + 50 if escalated`.
 Three inputs a public works supervisor would actually accept, and the score is shown in the UI so the ranking is legible rather than magic.
 A second reporter on a pothole is enough to move it from normal to high.
+
+**Classification confidence.** The agent reports how sure it is of the category, from 0.0 to 1.0, and below `ISSUE_TYPE_CONFIDENCE_THRESHOLD` (0.6) the backend refuses to apply it.
+The case keeps `issue_type: null`, stores the confidence, and routes to `unassigned` until a confident classification lands - at which point it re-routes itself.
+A case the city knows it cannot yet categorise is a different thing from one nobody has looked at, and the dashboard can tell them apart.
+Dispatching a sanitation crew to a water leak costs more than leaving a case unclassified for another minute, and the agent's tool docstrings tell it to report a low number honestly rather than always claiming certainty.
 
 **Escalation.** If a caller describes an immediate danger, the agent calls `escalate_to_human`, which flags the case, pins it to the top of the queue, and lights up the dashboard.
 This is the state change, not a dispatch integration.
@@ -132,30 +167,60 @@ uv run pytest                             # triage rules and the write path
 | GET | `/api/cases/{id}/events` | Audit log |
 | POST | `/api/calls` | Start a call record |
 | PATCH | `/api/calls/{id}` | Attach a case, end the call, store the summary |
-| POST | `/api/calls/{id}/turns` | Append a transcript line |
+| POST | `/api/calls/{id}/turns` | Append a final transcript line |
+| GET | `/api/calls/{id}/turns` | The transcript, ordered by `turn_seq` |
+| POST | `/api/calls/{id}/interim` | Broadcast a partial utterance. Stores nothing |
 | POST | `/api/token` | Mint a LiveKit join token for the browser |
-| WS | `/ws` | Live stream of every case, call, report, and transcript change |
+| WS | `/ws?since=<seq>` | Live stream, resumable. See below |
+
+`POST /api/reports` and `PATCH /api/cases/{id}` both take an optional `issue_type_confidence` alongside `issue_type`.
+`PATCH /api/calls/{id}` takes `phase`.
+
+### The websocket contract
+
+Every frame is exactly `{"v": 1, "seq": 128, "ts": "...", "type": "...", "payload": {...}}`.
+`hello`, `pong`, and `resync_required` are control frames and carry `"seq": null`; only replayable data frames consume a sequence number.
+
+The first frame is always `hello`. With `resume: true` it carries `from`/`to` and every frame in that range follows immediately in ascending `seq` order, before any new live frame.
+With `resume: false` the client discards local state and refetches its snapshots over REST.
+The client may send `{"type":"ping"}` and gets a `pong` back; any other client frame is ignored rather than treated as an error, so a newer dashboard cannot take its own connection down.
+
+| `type` | `payload` |
+| --- | --- |
+| `case.created` | the `Case` |
+| `case.updated` | `{case, changed: [...]}` - never empty; no frame at all when nothing moved |
+| `case.escalated` | the `Case` |
+| `report.filed` | `{report, case, merged, similarity}` |
+| `report.updated` | `{report, case_id, changed: [...]}` |
+| `call.started` | the `Call` |
+| `call.updated` | `{call, changed: [...]}` - a phase change is always its own frame |
+| `transcript.turn` | the `Turn`, a final utterance |
+| `transcript.delta` | `{call_id, turn_seq, role, text, final: false}` - replace, never concatenate |
+| `event.appended` | the `Event` audit row |
 
 ## Agent tools
 
 | Tool | What it does |
 | --- | --- |
-| `file_report` | Files the report as soon as the problem and place are known. Tells the agent whether it merged |
-| `update_request` | Patches the reporter's name and number, and the case's location, description, and type |
+| `file_report` | Files the report as soon as the problem and place are known. Tells the agent whether it merged, and whether its confidence was too low to categorise |
+| `update_request` | Patches the reporter's name and number, and the case's location, description, type, and category confidence |
 | `look_up_request` | Finds an existing case by case number or phone |
 | `add_case_note` | Appends a note |
 | `escalate_to_human` | Flags an immediate danger for human review |
 | `set_status` | Moves the case between new, in_progress, needs_info, resolved |
+| `set_call_phase` | Tells the dashboard where the conversation has got to |
 
 ## Tradeoffs
 
 Chosen deliberately for a three hour build:
 
-- SQLite with SQLModel, no migrations. The schema is created on startup.
-- One in-process websocket hub instead of Redis pub/sub. Correct for a single process, and the only thing that changes under multiple workers is the transport behind `hub.publish`.
+- SQLite with SQLModel, and an additive `ALTER TABLE` migration on startup rather than Alembic. Enough to keep an existing local database working across a schema change; not enough to rename or drop anything.
+- One in-process websocket hub instead of Redis pub/sub. Correct for a single process, and because the durable ordering lives in the `Outbox` table rather than in the hub, the only thing that changes under multiple workers is who tails that table.
+- The outbox keeps its most recent 2000 frames. Roughly an hour of a busy call centre: long enough that a laptop lid closed over lunch still resumes, short enough that the table stays small. Past that the client refetches, which is a slower path but never a wrong one.
+- livekit-agents 1.7 exposes interim transcription for the caller (`user_input_transcribed` with `is_final: false`) but has no public interim event for the agent's own speech, so the agent side emits one delta per utterance immediately before its final turn. The dashboard renders both speakers identically either way.
 - Deduplication is lexical, not semantic. No embeddings and no geocoder. It is explainable, instant, testable, and offline, which matters more here than catching "the big hole by the Safeway". A geocoder plus a radius check is the obvious production upgrade.
 - OpenAI Realtime as one speech-to-speech model rather than a separate STT, LLM, and TTS chain. Fewer moving parts and one API key, at the cost of provider lock-in.
 - No auth on the dashboard or the API. This is a localhost demo.
 - The call summary is generated once at hangup with a small model, not streamed.
 
-In production the next things would be Postgres with real migrations, a durable event log rather than an in-process hub, idempotency keys on report filing, auth and RBAC on the dashboard, PII handling for the recordings and transcripts, and a human review queue behind the escalation flag rather than just a red banner.
+In production the next things would be Postgres with real migrations, the outbox tailed by more than one process, idempotency keys on report filing, auth and RBAC on the dashboard, PII handling for the recordings and transcripts, and a human review queue behind the escalation flag rather than just a red banner.

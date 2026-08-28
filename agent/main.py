@@ -1,4 +1,4 @@
-"""LiveKit voice agent: the 311 intake line for the City of Bayview.
+"""LiveKit voice agent: the 311 intake line for the City of Berkeley.
 
 Run it with:
     uv run python -m agent.main console   # terminal mic, fastest to test
@@ -12,6 +12,12 @@ deliberate: it makes the dashboard show a live case that fills in during the
 conversation instead of one row appearing at hangup. Repeated partial updates
 are cheap because every write is a PATCH of only the fields that moved, and the
 backend logs and broadcasts exactly the fields that changed.
+
+The agent also reports two things about itself that only it knows: which
+*phase* of the call it is in, so staff watching the board can see the
+conversation progressing rather than just its result, and how *confident* it is
+in the category it picked, so a shaky guess leaves the case visibly
+unclassified instead of quietly mis-routed.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from livekit.agents import (
     ConversationItemAddedEvent,
     JobContext,
     RunContext,
+    UserInputTranscribedEvent,
     cli,
     function_tool,
 )
@@ -50,8 +57,12 @@ IssueType = Literal[
     "other",
 ]
 
-INSTRUCTIONS = """
-You are Ava, the automated intake line for the City of Bayview's 311 service
+# The prompt and the code both use this, so the agent cannot be told to open
+# with one line while the session speaks another.
+GREETING = "Hi, this is Emma from Berkeley. How can I help you today?"
+
+INSTRUCTIONS = f"""
+You are Emma, the automated intake line for the City of Berkeley's 311 service
 center. You speak with residents by phone.
 
 Style: warm, brisk, plain language. One question at a time. Never read a list
@@ -81,7 +92,12 @@ Rules:
   person is being brought in, and tell them to call 911 if anyone is in danger.
 - Never invent a case number, a status, or a repair timeline. If you do not
   know, say you do not know.
-- Open with: "Bayview 311, this is Ava. How can I help you today?"
+- Report your category confidence honestly. If the caller has been vague, a low
+  number is the correct answer and leaves the case visibly unclassified for a
+  human. Claiming certainty you do not have routes a crew to the wrong place.
+- Call `set_call_phase` as the conversation moves: `gathering` once you start
+  collecting details, `wrapping` when you begin reading the case number back.
+- Open with: "{GREETING}"
 """
 
 
@@ -94,7 +110,15 @@ class CallState:
     case_id: int | None = None
     case_number: str | None = None
     report_id: int | None = None
+    phase: str = "greeting"
     collected: dict[str, str] = field(default_factory=dict)
+
+    async def set_phase(self, phase: str) -> None:
+        """Tell the backend where the call has got to, once per transition."""
+        if self.call_id is None or self.phase == phase:
+            return
+        self.phase = phase
+        await self.api.set_phase(self.call_id, phase)
 
 
 class IntakeAgent(Agent):
@@ -110,6 +134,7 @@ class IntakeAgent(Agent):
         issue_type: IssueType,
         location: str,
         description: str,
+        issue_type_confidence: float,
     ) -> str:
         """File the caller's report as soon as you know the problem and roughly where it is.
 
@@ -122,13 +147,22 @@ class IntakeAgent(Agent):
             location: Where the problem is, in the caller's words. A street
                 address or an intersection, not their mailing address.
             description: One or two sentences in the caller's own words.
+            issue_type_confidence: How sure you are of the category, from 0.0 to
+                1.0. Be honest. Use a low number when the caller was vague, said
+                something that fits more than one category, or you are guessing
+                from a single word. Below 0.6 the city deliberately leaves the
+                case unclassified for a human rather than routing it wrongly,
+                and you can raise it later with update_request once you know
+                more. Overstating this sends a crew to the wrong department.
         """
         state = ctx.userdata
         if state.case_id is not None:
             return f"A report is already open on this call: {state.case_number}."
 
+        await state.set_phase("gathering")
         result = await state.api.file_report(
             issue_type=issue_type,
+            issue_type_confidence=issue_type_confidence,
             location=location,
             description=description,
             call_id=state.call_id,
@@ -142,6 +176,7 @@ class IntakeAgent(Agent):
             await state.api.update_call(
                 state.call_id, case_id=case["id"], report_id=report["id"]
             )
+        await state.set_phase("filed")
 
         logger.info(
             "filed report %s on case %s (merged=%s)",
@@ -150,6 +185,14 @@ class IntakeAgent(Agent):
             result["merged"],
         )
 
+        if case.get("issue_type") is None:
+            return (
+                f"Opened case {case['case_number']}, but your confidence of "
+                f"{issue_type_confidence} was too low to categorise it, so it is "
+                f"waiting on a human and is not routed to a department yet. Ask one "
+                f"more question to pin the category down, then call update_request "
+                f"with a higher confidence. Still collect their name and number."
+            )
         if result["merged"]:
             return (
                 f"This problem was already reported. Their report was added to existing "
@@ -173,6 +216,7 @@ class IntakeAgent(Agent):
         location: str | None = None,
         description: str | None = None,
         issue_type: IssueType | None = None,
+        issue_type_confidence: float | None = None,
     ) -> str:
         """Save newly learned details. Call this every time the caller tells you something.
 
@@ -182,6 +226,11 @@ class IntakeAgent(Agent):
             location: A corrected or more precise location for the problem.
             description: An improved description of the problem.
             issue_type: A corrected category, if the first guess was wrong.
+            issue_type_confidence: How sure you are of that category, 0.0 to 1.0.
+                Required whenever you pass issue_type. Report it honestly: below
+                0.6 the city leaves the case unclassified on purpose. This is how
+                a case you filed as unclassified gets categorised and routed once
+                the caller tells you enough to be sure.
         """
         state = ctx.userdata
         if state.case_id is None:
@@ -204,6 +253,7 @@ class IntakeAgent(Agent):
                 location=location,
                 description=description,
                 issue_type=issue_type,
+                issue_type_confidence=issue_type_confidence,
             )
 
         saved = {
@@ -275,6 +325,26 @@ class IntakeAgent(Agent):
         )
 
     @function_tool
+    async def set_call_phase(
+        self,
+        ctx: RunContext[CallState],
+        phase: Literal["greeting", "gathering", "filed", "wrapping", "ended"],
+    ) -> str:
+        """Tell the staff dashboard where this conversation has got to.
+
+        Staff watch live calls progress. Call this when the conversation moves
+        on, not on every turn.
+
+        Args:
+            phase: Use gathering once you are collecting details, and wrapping
+                when you start reading the case number back. filed and ended are
+                set for you when you file a report and when the call hangs up.
+        """
+        state = ctx.userdata
+        await state.set_phase(phase)
+        return f"Phase is {phase}."
+
+    @function_tool
     async def set_status(
         self,
         ctx: RunContext[CallState],
@@ -315,6 +385,26 @@ async def entrypoint(ctx: JobContext) -> None:
         llm=openai.realtime.RealtimeModel(voice="marin"),
     )
 
+    def _spawn(coro) -> None:
+        """Fire and forget, holding a reference so the task is not collected."""
+        task = asyncio.create_task(coro)
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
+    @session.on("user_input_transcribed")
+    def _on_transcript(ev: UserInputTranscribedEvent) -> None:
+        """Stream the caller's words as they arrive, before the sentence is done.
+
+        livekit-agents 1.7 emits this repeatedly with a growing transcript and
+        ``is_final`` false. The finals are ignored here: they arrive again as a
+        conversation item, and that is the one path that writes to the database.
+        """
+        if ev.is_final or state.call_id is None:
+            return
+        text = (ev.transcript or "").strip()
+        if text:
+            _spawn(api.add_interim(state.call_id, "caller", text))
+
     @session.on("conversation_item_added")
     def _on_item(ev: ConversationItemAddedEvent) -> None:
         """Mirror each finished utterance into the case timeline."""
@@ -326,17 +416,26 @@ async def entrypoint(ctx: JobContext) -> None:
         if not text.strip() or state.call_id is None:
             return
         speaker = "caller" if role == "user" else "agent"
-        # Fire and forget, but hold a reference so the task is not garbage collected.
-        task = asyncio.create_task(api.add_turn(state.call_id, speaker, text.strip()))
-        pending.add(task)
-        task.add_done_callback(pending.discard)
+
+        async def _write(call_id: int, speaker: str, text: str) -> None:
+            # The agent side has no interim event in livekit-agents 1.7, so its
+            # utterance gets one delta of its own before the final turn. The
+            # dashboard then renders both speakers the same way.
+            if speaker == "agent":
+                await api.add_interim(call_id, speaker, text)
+            await api.add_turn(call_id, speaker, text)
+
+        _spawn(_write(state.call_id, speaker, text.strip()))
 
     async def _finish() -> None:
         """On hangup: write a summary, close the call, park the case for staff."""
         try:
             if state.call_id is None:
                 return
+            await state.set_phase("wrapping")
             summary = await _summarize(session)
+            # status=completed also moves the phase to ended, in the backend, so
+            # a crash between these two calls cannot leave a call looking live.
             await api.update_call(state.call_id, status="completed", summary=summary)
             if state.case_id is not None:
                 await api.update_case(state.case_id, summary=summary, status="in_progress")
@@ -348,6 +447,10 @@ async def entrypoint(ctx: JobContext) -> None:
     ctx.add_shutdown_callback(_finish)
 
     await session.start(agent=IntakeAgent(), room=ctx.room)
+
+    # Speak first. A 311 line that waits for the caller to talk sounds broken,
+    # and the caller has no way to know the agent picked up.
+    session.generate_reply(instructions=f"Greet the caller with exactly: {GREETING}")
 
 
 async def _summarize(session: AgentSession) -> str:
