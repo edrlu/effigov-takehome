@@ -1,202 +1,99 @@
 "use client";
 
-import {
-  BarVisualizer,
-  LiveKitRoom,
-  RoomAudioRenderer,
-  useConnectionState,
-  useLocalParticipant,
-  useRoomContext,
-  useVoiceAssistant,
-} from "@livekit/components-react";
+/**
+ * The live call console.
+ *
+ * One page, three columns, one websocket. The resident places a real call from
+ * here (LiveKit, exactly as before), while the same panels a supervisor would
+ * watch fill in from the contract-v1 stream: what the agent extracted, what the
+ * case recorded, and what was said. Nothing on this page polls or waits for a
+ * refresh.
+ *
+ * It is also the only light-themed page in the app. The palette is declared
+ * locally, on this page and its own components, so the dark dashboard is
+ * untouched.
+ */
+
 import "@livekit/components-styles";
-import { ConnectionState } from "livekit-client";
 import Link from "next/link";
-import { useState } from "react";
-import { ErrorNote } from "@/components/ui";
-import { api } from "@/lib/api";
-import type { TokenResponse } from "@/lib/types";
-
-const CONNECTION_COPY: Record<string, { label: string; dot: string; text: string; pulse: boolean }> = {
-  [ConnectionState.Connecting]: { label: "Connecting", dot: "bg-amber-400", text: "text-amber-300", pulse: false },
-  [ConnectionState.Connected]: { label: "Connected", dot: "bg-green-400", text: "text-green-300", pulse: true },
-  [ConnectionState.Reconnecting]: {
-    label: "Reconnecting",
-    dot: "bg-amber-400",
-    text: "text-amber-300",
-    pulse: false,
-  },
-  [ConnectionState.SignalReconnecting]: {
-    label: "Reconnecting",
-    dot: "bg-amber-400",
-    text: "text-amber-300",
-    pulse: false,
-  },
-  [ConnectionState.Disconnected]: { label: "Disconnected", dot: "bg-faint", text: "text-faint", pulse: false },
-};
-
-const AGENT_COPY: Record<string, string> = {
-  disconnected: "Waiting for an agent to join",
-  connecting: "Agent is joining",
-  initializing: "Agent is warming up",
-  listening: "Agent is listening",
-  thinking: "Agent is thinking",
-  speaking: "Agent is speaking",
-};
+import { CallControls } from "@/components/call/CallControls";
+import { CaseActivity } from "@/components/call/CaseActivity";
+import { CurrentCall } from "@/components/call/CurrentCall";
+import { ExtractedInfo } from "@/components/call/ExtractedInfo";
+import { LiveTranscript } from "@/components/call/LiveTranscript";
+import { CallSessionProvider, useCallSession } from "@/components/call/session";
+import { useCallConsole } from "@/lib/useCallConsole";
 
 export default function ResidentCallPage() {
-  const [session, setSession] = useState<TokenResponse | null>(null);
-  const [starting, setStarting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const start = async () => {
-    setStarting(true);
-    setError(null);
-    try {
-      setSession(await api.createToken({}));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not start the call");
-    } finally {
-      setStarting(false);
-    }
-  };
-
-  const end = () => setSession(null);
-
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 py-4">
-      <div>
-        <h1 className="text-[20px] leading-7 font-semibold tracking-tight">Report a problem by voice</h1>
-        <p className="mt-1 text-[13px] leading-5 text-muted">
-          Talk to the city intake agent. It files the service request while you speak, and staff see it land on the
-          dashboard in real time.
-        </p>
-      </div>
-
-      {error ? <ErrorNote message={error} onRetry={() => void start()} /> : null}
-
-      {!session ? (
-        <div className="flex flex-col items-center gap-4 rounded-lg border border-line bg-panel px-6 py-12 text-center">
-          <span className="flex h-14 w-14 items-center justify-center rounded-full border border-line-strong bg-raised">
-            <svg viewBox="0 0 24 24" aria-hidden className="h-6 w-6 text-accent" fill="currentColor">
-              <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.93V21h2v-3.07A7 7 0 0 0 19 11h-2Z" />
-            </svg>
-          </span>
-          <div>
-            <p className="text-[14px] font-medium">Microphone only</p>
-            <p className="mt-1 text-[12px] text-faint">Your browser will ask for microphone access.</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => void start()}
-            disabled={starting}
-            className="h-9 rounded-md bg-accent px-4 text-[13px] font-medium text-canvas transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {starting ? "Starting" : "Start a call"}
-          </button>
-        </div>
-      ) : (
-        <LiveKitRoom
-          token={session.token}
-          serverUrl={session.url}
-          connect
-          audio
-          video={false}
-          onDisconnected={end}
-          onError={(cause) => {
-            setError(
-              `${cause.message}. Check that the LiveKit server at ${session.url} is running (livekit-server --dev).`,
-            );
-            setSession(null);
-          }}
-          className="contents"
-        >
-          <RoomAudioRenderer />
-          <CallStage session={session} />
-        </LiveKitRoom>
-      )}
-
-      <p className="text-center text-[12px] text-faint">
-        Staff view:{" "}
-        <Link href="/" className="text-muted underline decoration-line-strong underline-offset-2 hover:text-ink">
-          the case queue
-        </Link>
-      </p>
-    </div>
+    <CallSessionProvider>
+      <CallConsole />
+    </CallSessionProvider>
   );
 }
 
-function CallStage({ session }: { session: TokenResponse }) {
-  const room = useRoomContext();
-  const connectionState = useConnectionState();
-  const { state: agentState, audioTrack } = useVoiceAssistant();
-  const { localParticipant, isMicrophoneEnabled, microphoneTrack } = useLocalParticipant();
-
-  const connection = CONNECTION_COPY[connectionState] ?? CONNECTION_COPY[ConnectionState.Disconnected];
-  const connected = connectionState === ConnectionState.Connected;
-  const visualizerTrack = audioTrack ?? undefined;
+function CallConsole() {
+  const session = useCallSession();
+  const { call, kase, report, events, flashed } = useCallConsole(session.room);
 
   return (
-    <div className="flex flex-col gap-4 rounded-lg border border-line bg-panel p-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <span className="flex items-center gap-2 text-[12px]">
-          <span className={`h-1.5 w-1.5 rounded-full ${connection.dot} ${connection.pulse ? "live-dot" : ""}`} />
-          <span className={connection.text}>{connection.label}</span>
-        </span>
-        <span className="truncate font-mono text-[12px] text-faint">{session.room}</span>
-      </div>
-
-      <div className="flex h-24 items-center justify-center rounded-md border border-line bg-canvas">
-        {visualizerTrack ? (
-          <BarVisualizer
-            state={agentState}
-            barCount={7}
-            track={visualizerTrack}
-            options={{ minHeight: 12 }}
-            className="flex h-12 items-center justify-center gap-1.5"
-          >
-            <span className="w-1.5 rounded-full bg-accent/40 data-[lk-highlighted=true]:bg-accent" />
-          </BarVisualizer>
-        ) : (
-          <div className="flex h-12 items-end justify-center gap-1.5" aria-hidden>
-            {Array.from({ length: 7 }).map((_, index) => (
-              <span key={index} className="w-1.5 rounded-full bg-line-strong" style={{ height: 12 }} />
-            ))}
+    // Full-bleed: the console owns the whole viewport width under the nav, so
+    // the light surface does not sit in a dark frame on a wide screen.
+    <div className="cc-light -mt-6 -mb-6 ml-[calc(50%-50vw)] min-h-[calc(100vh-3.5rem)] w-[100vw] bg-[#f5f6f8] px-4 py-6 text-slate-900 sm:px-6">
+      <div className="mx-auto w-full max-w-[1400px]">
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="text-[19px] leading-6 font-semibold tracking-[-0.015em] text-slate-900">
+              Live call console
+            </h1>
+            <p className="mt-1 text-[13px] text-slate-500">
+              Talk to the city intake agent. Everything it hears is filed against a case while you speak.
+            </p>
           </div>
-        )}
+          <Link
+            href="/"
+            className="text-[13px] text-slate-500 underline decoration-slate-300 underline-offset-2 transition-colors hover:text-slate-800"
+          >
+            Staff case queue
+          </Link>
+        </div>
+
+        {session.error ? (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[13px] border border-red-200 bg-red-50 px-4 py-3">
+            <p className="text-[13px] text-red-700">{session.error}</p>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={session.start}
+                className="rounded-md border border-red-300 px-2.5 py-1 text-[12px] font-medium text-red-700 transition-colors hover:bg-red-100"
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={session.dismissError}
+                className="rounded-md px-2.5 py-1 text-[12px] text-red-600 transition-colors hover:bg-red-100"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-3">
+          <div className="flex flex-col gap-5">
+            <CallControls call={call} />
+            <ExtractedInfo call={call} kase={kase} report={report} flashed={flashed} />
+          </div>
+
+          <CurrentCall call={call} kase={kase} report={report} />
+
+          <div className="flex flex-col gap-5">
+            <LiveTranscript call={call} />
+            <CaseActivity events={events} kase={kase} />
+          </div>
+        </div>
       </div>
-
-      <p className="text-center text-[12px] text-muted">
-        {connected ? (AGENT_COPY[agentState] ?? "In call") : "Setting up the room"}
-      </p>
-
-      <div className="flex flex-wrap items-center justify-center gap-2">
-        <button
-          type="button"
-          onClick={() => void localParticipant.setMicrophoneEnabled(!isMicrophoneEnabled)}
-          disabled={!connected}
-          className={`h-9 rounded-md border px-3.5 text-[13px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-            isMicrophoneEnabled
-              ? "border-line text-ink hover:border-line-strong"
-              : "border-amber-400/40 bg-amber-400/10 text-amber-300"
-          }`}
-        >
-          {isMicrophoneEnabled ? "Mute" : "Unmute"}
-        </button>
-        <button
-          type="button"
-          onClick={() => void room.disconnect()}
-          className="h-9 rounded-md bg-red-500/90 px-3.5 text-[13px] font-medium text-white transition-opacity hover:opacity-90"
-        >
-          End call
-        </button>
-      </div>
-
-      {microphoneTrack === undefined && connected ? (
-        <p className="text-center text-[12px] text-amber-300">
-          No microphone is publishing yet. Allow microphone access to be heard.
-        </p>
-      ) : null}
     </div>
   );
 }

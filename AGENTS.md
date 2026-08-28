@@ -19,6 +19,15 @@ For the same reason `_log` snapshots each `Event` with `serialize` at write time
 The transition is recorded as an `Event` with `kind="case.updated"`, `field="status"`, `new_value="resolved"`, and `server/analytics.py` reads exactly that shape.
 Anything that writes a resolution outside `store.update_case` - `scripts/seed.py` does - has to write that event too, or the case silently drops out of the resolution-time average.
 
+**A panel that follows its own tail must ignore its own scroll events.**
+Setting `scrollTop` fires a `scroll` event a frame later, by which time more rows may have landed and pushed the bottom further away.
+Judging "has the reader scrolled up?" from that stale event unpins the panel permanently after the first burst, and it silently stops following.
+`web/src/lib/useTailFollow.ts` remembers the offset it scrolled to and treats an event still sitting there as its own; use it rather than hand-rolling the effect again.
+
+**A frame handler cannot read a ref that only updates on render.**
+`call.started` and the `event.appended` announcing it are dispatched in the same task, so a handler that decides ownership from a ref assigned during render sees the previous value and drops the event.
+`web/src/lib/useCallConsole.ts` assigns those refs inside the handler that adopts the call, not in the render body.
+
 ## Commands
 
 - `uv run pytest` - the whole suite.

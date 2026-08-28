@@ -44,6 +44,7 @@ export type EventKind =
   | "note.added"
   | "call.started"
   | "call.ended"
+  | "call.updated"
   | "report.filed"
   | "report.merged"
   | "case.escalated"
@@ -92,6 +93,8 @@ export interface Report {
   created_at: string;
 }
 
+export type Sentiment = "positive" | "neutral" | "negative";
+
 export interface Call {
   id: number;
   room: string;
@@ -103,6 +106,23 @@ export interface Call {
   summary: string | null;
   started_at: string;
   ended_at: string | null;
+
+  /**
+   * Caller-identity and live-narration fields the call console shows. Every one
+   * is optional: they were added after the first wire contract, so a backend
+   * that predates them simply omits them and the console falls back (the
+   * display phone is derived client-side, the city defaults, the sentiment
+   * chip reads neutral).
+   */
+  caller_name?: string | null;
+  caller_city?: string | null;
+  line_type?: string | null;
+  language?: string | null;
+  sentiment?: Sentiment | null;
+  /** One sentence describing what the voice agent is doing right now. */
+  activity_line?: string | null;
+  /** Pre-formatted `+1 (415) 555-0189`, when the backend can build it. */
+  caller_phone_display?: string | null;
 }
 
 export interface Turn {
