@@ -109,7 +109,8 @@ def test_lookup_offers_the_last_four_digits_and_never_the_whole_number(client):
         "/api/cases/lookup", params={"identifier": filed["case"]["case_number"]}
     ).json()
 
-    assert found["reporter"] == {"name": "Priya Raman", "phone_last4": "0188"}
+    assert found["reporter"]["name"] == "Priya Raman"
+    assert found["reporter"]["phone_last4"] == "0188"
     assert "5105550188" not in json.dumps(found)
 
 
@@ -131,7 +132,8 @@ def test_lookup_verifies_a_second_reporter_against_their_own_number(client):
     assert second["merged"] is True
 
     found = client.get("/api/cases/lookup", params={"identifier": "5105550188"}).json()
-    assert found["reporter"] == {"name": "Priya Raman", "phone_last4": "0188"}
+    assert found["reporter"]["name"] == "Priya Raman"
+    assert found["reporter"]["phone_last4"] == "0188"
 
 
 def test_lookup_says_nothing_to_verify_against_when_nobody_left_details(client):
@@ -199,6 +201,191 @@ def test_filing_against_a_case_that_does_not_exist_is_a_404(client):
         "/api/reports", json={"case_id": 9999, "reporter_name": "Nobody"}
     )
     assert response.status_code == 404
+
+
+# --------------------------------------------------------------------------
+# One report per resident: corroboration counts people, not calls
+# --------------------------------------------------------------------------
+
+
+def test_the_same_caller_ringing_back_does_not_inflate_corroboration(client):
+    """One neighbour phoning three times is not three neighbours.
+
+    This is the whole basis of the priority bump, so it has to count people.
+    """
+    first = client.post(
+        "/api/reports", json={**POTHOLE, "reporter_phone": "5105551212"}
+    ).json()
+    case_id = first["case"]["id"]
+    score = first["case"]["priority_score"]
+
+    again = client.post(
+        "/api/reports",
+        json={
+            **POTHOLE,
+            "reporter_phone": "5105551212",
+            "description": "Still there, and it has got worse.",
+        },
+    ).json()
+
+    assert again["case"]["id"] == case_id
+    assert again["repeat"] is True
+    assert again["case"]["report_count"] == 1
+    assert again["case"]["priority_score"] == score
+
+    reports = client.get(f"/api/cases/{case_id}/reports").json()
+    assert len(reports) == 1
+    # Their latest account replaced the earlier one; it did not sit beside it.
+    assert reports[0]["description"] == "Still there, and it has got worse."
+
+
+def test_two_different_numbers_are_two_residents(client):
+    first = client.post(
+        "/api/reports", json={**POTHOLE, "reporter_phone": "5105551212"}
+    ).json()
+    second = client.post(
+        "/api/reports", json={**POTHOLE, "reporter_phone": "5105550188"}
+    ).json()
+
+    assert second["case"]["id"] == first["case"]["id"]
+    assert second["repeat"] is False
+    assert second["case"]["report_count"] == 2
+    assert second["case"]["priority_score"] > first["case"]["priority_score"]
+
+
+def test_a_caller_who_leaves_no_number_gets_their_own_report(client):
+    """Nobody we can recognise again is nobody we can key.
+
+    Each anonymous account is its own report rather than being dropped or
+    folded into whoever else is on the case.
+    """
+    first = client.post("/api/reports", json=POTHOLE).json()
+    second = client.post("/api/reports", json=POTHOLE).json()
+
+    assert second["case"]["id"] == first["case"]["id"]
+    assert second["repeat"] is False
+    assert second["case"]["report_count"] == 2
+
+
+def test_a_callers_detail_lands_on_their_report_not_on_the_case(client):
+    """A later, vaguer caller must not overwrite a sharper one at case level."""
+    first = client.post(
+        "/api/reports", json={**POTHOLE, "reporter_phone": "5105551212"}
+    ).json()
+    case = first["case"]
+
+    second = client.post(
+        "/api/reports",
+        json={
+            **POTHOLE,
+            "reporter_phone": "5105550188",
+            "description": "Big hole somewhere along there.",
+            "location": "Somewhere on Shattuck",
+        },
+    ).json()
+
+    assert second["report"]["description"] == "Big hole somewhere along there."
+    assert second["report"]["location"] == "Somewhere on Shattuck"
+
+    after = client.get(f"/api/cases/{case['id']}").json()
+    assert after["description"] == POTHOLE["description"]
+    assert after["location"] == POTHOLE["location"]
+
+
+def test_a_number_arriving_late_folds_into_the_report_that_already_has_it(client):
+    """The agent files early and learns the number a minute later.
+
+    That number can turn out to belong to a report the case already holds - the
+    same resident, discovered late. Their details are kept, not refused.
+    """
+    first = client.post(
+        "/api/reports",
+        json={**POTHOLE, "reporter_name": "Edward Lu", "reporter_phone": "5105551212"},
+    ).json()
+    case_id = first["case"]["id"]
+
+    late = client.post("/api/reports", json={**POTHOLE, "case_id": case_id}).json()
+    assert late["case"]["report_count"] == 2
+
+    folded = client.patch(
+        f"/api/reports/{late['report']['id']}",
+        json={"reporter_phone": "5105551212", "description": "Worse than I first said."},
+    ).json()
+
+    assert folded["id"] == first["report"]["id"]
+    assert folded["reporter_name"] == "Edward Lu"
+    assert folded["description"] == "Worse than I first said."
+
+    reports = client.get(f"/api/cases/{case_id}/reports").json()
+    assert len(reports) == 1
+    assert client.get(f"/api/cases/{case_id}").json()["report_count"] == 1
+
+
+# --------------------------------------------------------------------------
+# Staff work the case, not the pile of reports under it
+# --------------------------------------------------------------------------
+
+
+def test_staff_can_promote_a_reports_wording_onto_the_case(client):
+    case = client.post("/api/reports", json=POTHOLE).json()["case"]
+    better = client.post(
+        "/api/reports",
+        json={
+            "case_id": case["id"],
+            "reporter_phone": "5105550188",
+            "description": "Crater about a foot across in the eastbound bike lane.",
+            "location": "Shattuck Avenue at Berkeley Way, eastbound",
+        },
+    ).json()["report"]
+
+    promoted = client.post(
+        f"/api/cases/{case['id']}/promote-report", json={"report_id": better["id"]}
+    ).json()
+
+    assert promoted["description"] == "Crater about a foot across in the eastbound bike lane."
+    assert promoted["location"] == "Shattuck Avenue at Berkeley Way, eastbound"
+
+    kinds = [e["field"] for e in client.get(f"/api/cases/{case['id']}/events").json()]
+    assert "description" in kinds and "location" in kinds
+
+
+def test_promoting_takes_only_the_fields_asked_for(client):
+    case = client.post("/api/reports", json=POTHOLE).json()["case"]
+    report = client.post(
+        "/api/reports",
+        json={
+            "case_id": case["id"],
+            "reporter_phone": "5105550188",
+            "description": "Crater in the bike lane.",
+            "location": "Somewhere vaguer",
+        },
+    ).json()["report"]
+
+    promoted = client.post(
+        f"/api/cases/{case['id']}/promote-report",
+        json={"report_id": report["id"], "fields": ["description"]},
+    ).json()
+
+    assert promoted["description"] == "Crater in the bike lane."
+    assert promoted["location"] == POTHOLE["location"]
+
+
+def test_a_report_cannot_be_promoted_onto_a_case_it_does_not_belong_to(client):
+    mine = client.post("/api/reports", json=POTHOLE).json()
+    other = client.post(
+        "/api/reports",
+        json={
+            "issue_type": "water_leak",
+            "location": "Somewhere else entirely",
+            "description": "Water across the pavement.",
+        },
+    ).json()
+
+    response = client.post(
+        f"/api/cases/{mine['case']['id']}/promote-report",
+        json={"report_id": other["report"]["id"]},
+    )
+    assert response.status_code == 400
 
 
 def test_correcting_the_issue_type_re_routes_the_case(client):

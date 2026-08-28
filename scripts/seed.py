@@ -381,6 +381,7 @@ def backfill_history() -> None:
                     reporter_name=name,
                     reporter_phone=phone,
                     description=case.description,
+                    location=case.location,
                     created_at=case.created_at,
                 )
             )
@@ -421,14 +422,19 @@ def backfill_history() -> None:
         routine, held_out = cases[:-SPECIAL_CASES], cases[-SPECIAL_CASES:]
 
         # --- corroboration: a few incidents several neighbours called about --
-        for case in routine[:6]:
+        for index, case in enumerate(routine[:6]):
             extra = RNG.randint(1, 3)
             # Sorted, because the count each event carries only makes sense in
             # the order the timeline renders them: 1 -> 2 -> 3, not 1 -> 2 then
             # 3 -> 4 dated before 2 -> 3.
             filed_ats = sorted(_aged(case.created_at, now, RNG) for _ in range(extra))
-            for filed_at in filed_ats:
-                name, phone = RNG.choice(CALLERS)
+            # Distinct neighbours, and never the one the case was opened with.
+            # A case holds one report per phone number, and corroboration is a
+            # count of *people* - drawing the same caller twice would be one
+            # resident phoning back, which is exactly what must not raise it.
+            already = CALLERS[index % len(CALLERS)]
+            neighbours = RNG.sample([c for c in CALLERS if c != already], extra)
+            for filed_at, (name, phone) in zip(filed_ats, neighbours):
                 case.report_count += 1
                 session.add(
                     Report(
@@ -436,6 +442,7 @@ def backfill_history() -> None:
                         reporter_name=name,
                         reporter_phone=phone,
                         description=case.description,
+                        location=case.location,
                         created_at=filed_at,
                     )
                 )

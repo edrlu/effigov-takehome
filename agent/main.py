@@ -29,7 +29,7 @@ import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -188,8 +188,11 @@ class CallState:
     # of it the agent is ever given. ``identity_verified`` stays False until
     # the caller has matched both, and gates everything that would treat them
     # as that reporter.
-    on_file: dict[str, str | None] | None = None
+    on_file: dict[str, Any] | None = None
     identity_verified: bool = False
+    # Whether the case already carries an on-site landmark. A later caller may
+    # supply a missing one; they may not overwrite one that is already there.
+    case_has_detail: bool = False
     # Whether ``set_status`` was called during this call. Hangup parks a case
     # the agent never ruled on; a case it *did* rule on keeps that ruling.
     status_set: bool = False
@@ -292,6 +295,7 @@ class IntakeAgent(Agent):
         state.case_id = case["id"]
         state.case_number = case["case_number"]
         state.report_id = report["id"]
+        state.case_has_detail = bool(case.get("location_detail"))
 
         if state.call_id is not None:
             await state.api.update_call(
@@ -342,18 +346,33 @@ class IntakeAgent(Agent):
         issue_type: IssueType | None = None,
         issue_type_confidence: float | None = None,
     ) -> str:
-        """Save newly learned details. Call this every time the caller tells you something.
+        """Record what THIS caller tells you, on their own report.
+
+        You are writing down one resident's account, not editing a shared
+        record. Their name, their number, their words for the problem and for
+        where it is all belong to them, and go on their report. Several
+        residents can report the same pothole and each keeps their own account;
+        a later caller never overwrites an earlier one. What the city dispatches
+        a crew to is the case, and a staff member decides when a report's
+        wording is good enough to become the case's own.
+
+        Call this every time the caller tells you something.
 
         Args:
             caller_name: Caller's full name, as they said it.
             phone: Callback number, digits only.
-            location: A corrected or more precise location for the problem.
+            location: Where THIS caller says the problem is. Their account of
+                it, in their words - it is recorded against them, and does not
+                move the location the case already carries.
             location_detail: Where exactly on that street the problem is, once
                 you have the address. Ask for it: "whereabouts on the street is
                 it?". One short phrase in the caller's own words, such as
                 "right lane near the crosswalk, curb side" or "back alley
                 behind the pharmacy". The address gets a crew to the block; this
-                is what stops them driving past the thing twice.
+                is what stops them driving past the thing twice. It is the one
+                thing here that lands on the case, and only when the case has
+                none yet, so a crew is never sent looking for the wrong landmark.
+            description: What THIS caller is describing, in their own words.
             issue_type: A corrected category, if the first guess was wrong.
             issue_type_confidence: How sure you are of that category, 0.0 to 1.0.
                 Required whenever you pass issue_type. Report it honestly: below
@@ -384,23 +403,32 @@ class IntakeAgent(Agent):
         if caller_name:
             await state.set_caller_name(caller_name)
 
-        if state.report_id is not None and (caller_name or phone or description):
+        # Everything the caller says about themselves and about what they saw
+        # is theirs, and lands on their report.
+        if state.report_id is not None and (caller_name or phone or description or location):
             await state.api.update_report(
                 state.report_id,
                 reporter_name=caller_name,
                 reporter_phone=phone,
                 description=description,
+                location=location,
             )
 
-        if location or location_detail or description or issue_type:
-            await state.api.update_case(
-                state.case_id,
-                location=location,
-                location_detail=location_detail,
-                description=description,
-                issue_type=issue_type,
-                issue_type_confidence=issue_type_confidence,
-            )
+        # Classification is the city's, not one caller's, so a corrected
+        # category still moves the case - that is the agent fixing its own
+        # guess, not one resident overruling another.
+        case_fields: dict[str, Any] = {}
+        if issue_type:
+            case_fields["issue_type"] = issue_type
+            case_fields["issue_type_confidence"] = issue_type_confidence
+        # The landmark is the exception: a case with no on-site detail is one a
+        # crew drives past, so a later caller may supply the missing one. They
+        # may not replace a landmark the case already has.
+        if location_detail and not state.case_has_detail:
+            case_fields["location_detail"] = location_detail
+            state.case_has_detail = True
+        if case_fields:
+            await state.api.update_case(state.case_id, **case_fields)
 
         saved = {
             "caller_name": caller_name,
@@ -435,6 +463,8 @@ class IntakeAgent(Agent):
         state.case_number = case["case_number"]
         state.on_file = case.get("reporter")
         state.identity_verified = False
+        state.report_id = None
+        state.case_has_detail = bool(case.get("location_detail"))
         if state.call_id is not None:
             await state.api.update_call(state.call_id, case_id=case["id"])
 
@@ -500,12 +530,19 @@ class IntakeAgent(Agent):
                 f"callback number and call add_reporter_to_case."
             )
 
-        name = (state.on_file or {}).get("name")
+        on_file = state.on_file or {}
+        name = on_file.get("name")
         if name:
             await state.set_caller_name(name)
+        # They already have a report on this case. Anything they add now
+        # updates it rather than filing a second one, which is what keeps the
+        # case's count of separate residents honest when somebody rings back.
+        state.report_id = on_file.get("report_id")
         return (
-            f"Verified as the reporter on {state.case_number}. You may discuss their case "
-            f"and add anything new with add_case_note."
+            f"Verified as the reporter on {state.case_number}. This is their own report, so "
+            f"update_request now updates the account they gave last time rather than filing "
+            f"a second one. Add anything new they tell you, and use add_case_note for "
+            f"anything that is not a stored field."
         )
 
     @function_tool
@@ -515,6 +552,7 @@ class IntakeAgent(Agent):
         caller_name: str,
         phone: str,
         description: str | None = None,
+        location: str | None = None,
     ) -> str:
         """File this caller's own report against the case they asked about.
 
@@ -528,6 +566,8 @@ class IntakeAgent(Agent):
             phone: This caller's own callback number, digits only.
             description: What they are seeing now, in their words, if it adds
                 anything to what the case already says.
+            location: Where THIS caller says it is, if they put it differently.
+                Recorded against them; it does not move the case's own location.
         """
         state = ctx.userdata
         if state.case_id is None:
@@ -539,6 +579,7 @@ class IntakeAgent(Agent):
             reporter_name=caller_name,
             reporter_phone=digits,
             description=description,
+            location=location,
             call_id=state.call_id,
         )
         case, report = result["case"], result["report"]
@@ -548,10 +589,16 @@ class IntakeAgent(Agent):
             await state.api.update_call(state.call_id, report_id=report["id"])
 
         logger.info("added reporter %s to case %s", report["id"], state.case_number)
+        if result.get("repeat"):
+            return (
+                f"That number already had a report on {case['case_number']}, so their own "
+                f"account was updated rather than a second one filed. The case still counts "
+                f"{case['report_count']} separate residents. Give them the case number."
+            )
         return (
-            f"Added them as a reporter on {case['case_number']}, which now has "
-            f"{case['report_count']} reports. Tell the caller the city already knows about "
-            f"this one, that their report is now on it, and give them that case number."
+            f"Added them as a reporter on {case['case_number']}, which {case['report_count']} "
+            f"separate residents have now reported. Tell the caller the city already knows "
+            f"about this one, that their report is now on it, and give them that case number."
         )
 
     @function_tool
@@ -763,13 +810,19 @@ async def entrypoint(ctx: JobContext) -> None:
             # a crash between these two calls cannot leave a call looking live.
             await api.update_call(state.call_id, status="completed", summary=summary)
             if state.case_id is not None:
+                # The call's summary is about this call. The case's has to be
+                # about the incident: staff work the case and must not have to
+                # read five reports to understand one pothole, so once several
+                # residents are on it the summary is written over all of their
+                # accounts rather than over whoever rang last.
+                case_summary = await _case_summary(api, state.case_id, summary)
                 # The summary always lands. The status only does when the agent
                 # never ruled on this case: parking a fresh intake with the
                 # department is right, overwriting a deliberate ``resolved`` or
                 # ``needs_info`` at hangup is not.
                 await api.update_case(
                     state.case_id,
-                    summary=summary,
+                    summary=case_summary,
                     status=None if state.status_set else "in_progress",
                 )
         except Exception:
@@ -800,21 +853,58 @@ async def _summarize(session: AgentSession) -> str:
     if not lines:
         return "Call ended before anything was said."
 
+    return await _ask(
+        "Summarize this 311 intake call for the city staffer who will work "
+        "the case. Three sentences at most: what was reported, where, and "
+        "anything still missing. No preamble.",
+        "\n".join(lines),
+    )
+
+
+async def _case_summary(api: CaseAPI, case_id: int, call_summary: str) -> str:
+    """A case-level summary that survives corroboration.
+
+    A case with one report is that call, so this is a no-op for it. A case
+    several residents have reported is not: writing this call's summary over
+    the case would make it read as whoever happened to ring most recently, and
+    a supervisor opening it would have to go digging through the reports to
+    find out that four other people said the same thing. So the accounts are
+    summarised together, and the last caller stops being the whole story.
+    """
+    try:
+        reports = await api.case_reports(case_id)
+    except Exception:
+        logger.exception("could not read reports for case %s", case_id)
+        return call_summary
+
+    accounts = [
+        f"Report {index}: {r.get('description') or 'no description given'}"
+        + (f" (location as given: {r['location']})" if r.get("location") else "")
+        for index, r in enumerate(reports, start=1)
+    ]
+    if len(accounts) < 2:
+        return call_summary
+
+    return await _ask(
+        "Summarize a 311 case for the city staffer who will work it. Several "
+        "residents have reported the same incident: say what the problem is, "
+        "where, what the accounts agree on, and anything only one of them "
+        "mentions. Three sentences at most, no preamble, and do not name the "
+        "callers.",
+        "\n".join([f"Latest call: {call_summary}", *accounts]),
+    )
+
+
+async def _ask(system: str, user: str) -> str:
+    """One non-streaming completion. The summariser's only model call."""
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     response = await client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Summarize this 311 intake call for the city staffer who will work "
-                    "the case. Three sentences at most: what was reported, where, and "
-                    "anything still missing. No preamble."
-                ),
-            },
-            {"role": "user", "content": "\n".join(lines)},
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
         ],
     )
     return (response.choices[0].message.content or "").strip()

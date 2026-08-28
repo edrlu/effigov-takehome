@@ -167,7 +167,26 @@ class Case(SQLModel, table=True):
 
 
 class Report(SQLModel, table=True):
-    """One resident's account of an incident, and how to reach them."""
+    """One resident's account of an incident, and how to reach them.
+
+    Keyed by phone number within a case: one resident, one report, however many
+    times they ring back. That is what makes ``Case.report_count`` a count of
+    *people* rather than of calls, which is the whole basis of corroboration -
+    one neighbour phoning three times is not three neighbours.
+
+    A caller who will not leave a number cannot be keyed, so they get a fresh
+    report each time. SQLite treats NULLs as distinct under a unique
+    constraint, so that falls out of the constraint rather than needing a
+    special case. See ``store.distinct_reporters``.
+
+    Everything here is one resident's own account, including their own wording
+    for where the problem is. It is supporting evidence: staff work the Case,
+    and reach for a report when they need to ring somebody back.
+    """
+
+    __table_args__ = (
+        UniqueConstraint("case_id", "reporter_phone", name="uq_report_case_phone"),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     case_id: int = Field(foreign_key="case.id", index=True)
@@ -176,6 +195,11 @@ class Report(SQLModel, table=True):
     reporter_name: str | None = None
     reporter_phone: str | None = Field(default=None, index=True)
     description: str | None = None
+    # This caller's own words for where the problem is. The case carries the
+    # canonical location a crew is dispatched to; this is what one resident
+    # said, kept so a later, vaguer caller cannot overwrite a sharper one and
+    # so staff can promote a better account onto the case deliberately.
+    location: str | None = None
 
     created_at: datetime = Field(default_factory=utcnow)
 

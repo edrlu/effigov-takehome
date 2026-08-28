@@ -67,7 +67,7 @@ MUTABLE_CASE_FIELDS = {
 # one lookup beside coordinates from another is not a location, it is a bug.
 GEOCODED_CASE_FIELDS = ("location_formatted", "latitude", "longitude", "location_precision")
 
-MUTABLE_REPORT_FIELDS = ("reporter_name", "reporter_phone", "description")
+MUTABLE_REPORT_FIELDS = ("reporter_name", "reporter_phone", "description", "location")
 
 # Fields a PATCH on a call may set. ``phase`` and ``status`` are not here: they
 # are lifecycle, handled explicitly above the loop that walks this tuple.
@@ -110,6 +110,11 @@ def serialize(obj: Any) -> dict[str, Any]:
     if isinstance(obj, Call):
         # Formatted once, here, so every client renders the same number.
         data["caller_phone_display"] = format_phone(obj.caller_phone)
+        # Said out loud rather than inferred from a null. A call with no report
+        # is legitimate - somebody who hung up before saying anything, or who
+        # only wanted a status - and a reader should be able to tell that from
+        # a record that lost its link.
+        data["produced_report"] = obj.report_id is not None
     return data
 
 
@@ -242,6 +247,40 @@ def _log(
 # --------------------------------------------------------------------------
 # Priority
 # --------------------------------------------------------------------------
+
+
+def distinct_reporters(session: Session, case: Case) -> int:
+    """How many separate residents have reported this case.
+
+    Corroboration is the reason this number exists: it raises a case up the
+    queue because several people independently hit the same problem. Counting
+    *calls* would let one resident phoning back three times outrank a genuine
+    three-neighbour report, so this counts people.
+
+    A resident is their phone number. A report with no number belongs to
+    somebody we cannot recognise again, so each one counts as its own person -
+    the alternative, folding every anonymous account into one, would silence
+    three real neighbours who all declined to leave a number, and a
+    corroboration signal that can be silenced is worse than one that can be
+    nudged.
+    """
+    reports = session.exec(select(Report).where(Report.case_id == case.id)).all()
+    phones = {r.reporter_phone for r in reports if r.reporter_phone}
+    anonymous = sum(1 for r in reports if not r.reporter_phone)
+    return len(phones) + anonymous
+
+
+def _recount_reporters(session: Session, case: Case) -> bool:
+    """Set ``report_count`` from the reports themselves. True if it moved.
+
+    Derived rather than incremented, so a repeat call from a number already on
+    the case cannot inflate it and a folded duplicate cannot leave it stale.
+    """
+    count = distinct_reporters(session, case)
+    if case.report_count == count:
+        return False
+    case.report_count = count
+    return True
 
 
 def _reprice(session: Session, case: Case, *, actor: str = "system") -> list[str]:
@@ -561,7 +600,16 @@ def reporter_on_file(
         else None
     )
     report = matched or contactable[0]
-    return {"name": report.reporter_name, "phone_last4": phone_last4(report.reporter_phone)}
+    return {
+        "name": report.reporter_name,
+        "phone_last4": phone_last4(report.reporter_phone),
+        # The report this identity belongs to, so a caller who *passes*
+        # verification can edit their own account. The agent holds it unused
+        # until then: an id is not a phone number, and it is worthless without
+        # the check, but it is what lets a returning caller update their report
+        # instead of filing a second one.
+        "report_id": report.id,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -581,12 +629,15 @@ def file_report(
     call_id: int | None = None,
     case: Case | None = None,
     actor: str = "voice_agent",
-) -> tuple[Report, Case, bool]:
+) -> tuple[Report, Case, bool, bool]:
     """File a resident's report, attaching it to an existing case when the city
     already knows about this problem.
 
-    Returns ``(report, case, merged)``. ``merged`` is what the agent reads back
-    to the caller: "we already have that one, I have added your report to it".
+    Returns ``(report, case, merged, repeat)``. ``merged`` is what the agent
+    reads back to the caller: "we already have that one, I have added your
+    report to it". ``repeat`` says this caller already had a report on the case
+    and it was updated rather than a second one filed - their own account
+    replaced, the case's count of *people* unchanged.
 
     A classification below the confidence threshold is not merged on. Guessing
     "pothole" at 0.3 and folding the caller into somebody else's pothole case
@@ -628,18 +679,57 @@ def file_report(
             )
             similarity = 1.0
 
-    report = Report(
-        case_id=case.id,
-        call_id=call_id,
-        reporter_name=reporter_name,
-        reporter_phone=reporter_phone,
-        description=description,
-    )
+    # One report per resident per case. A number already on this case is the
+    # same person ringing back, so their account is replaced rather than
+    # doubled - which is what stops one caller looking like a street's worth of
+    # corroboration.
+    existing = _report_for_phone(session, case, reporter_phone)
+    repeat = existing is not None
+
+    if existing is not None:
+        report = existing
+        for field, value in (
+            ("reporter_name", reporter_name),
+            ("description", description),
+            ("location", location),
+        ):
+            if value:
+                setattr(report, field, value)
+        if call_id is not None:
+            report.call_id = call_id
+    else:
+        report = Report(
+            case_id=case.id,
+            call_id=call_id,
+            reporter_name=reporter_name,
+            reporter_phone=reporter_phone,
+            description=description,
+            location=location,
+        )
     session.add(report)
     session.commit()
     session.refresh(report)
 
-    case.report_count += 1
+    # Call -> Report -> Case. The link is written here rather than left to
+    # whoever called this to remember: a completed call that took a resident's
+    # account and points at no report is a broken record, and the only way to
+    # make that impossible is to not depend on a second request arriving.
+    if call_id is not None:
+        call = session.get(Call, call_id)
+        if call is not None and (call.report_id != report.id or call.case_id != case.id):
+            call.report_id = report.id
+            call.case_id = case.id
+            session.add(call)
+            session.commit()
+            session.refresh(call)
+            publish(
+                session,
+                "call.updated",
+                {"call": serialize(call), "changed": ["report_id", "case_id"]},
+            )
+
+    before = case.report_count
+    _recount_reporters(session, case)
     case.updated_at = utcnow()
     _log(
         session,
@@ -647,7 +737,7 @@ def file_report(
         case_id=case.id,
         call_id=call_id,
         field="report_count",
-        old=case.report_count - 1,
+        old=before,
         new=case.report_count,
         actor=actor,
     )
@@ -664,14 +754,43 @@ def file_report(
             "report": serialize(report),
             "case": serialize(case),
             "merged": merged,
+            "repeat": repeat,
             "similarity": round(similarity, 2),
         },
     )
-    return report, case, merged
+    return report, case, merged, repeat
+
+
+def _report_for_phone(session: Session, case: Case, phone: str | None) -> Report | None:
+    """This case's report for one number, or ``None``.
+
+    A caller with no number is nobody we can recognise again, so they never
+    match: they get their own report, which is also what the unique constraint
+    does with NULLs.
+    """
+    if not phone:
+        return None
+    return session.exec(
+        select(Report).where(Report.case_id == case.id, Report.reporter_phone == phone)
+    ).first()
 
 
 def update_report(session: Session, report: Report, data: dict[str, Any]) -> Report:
-    """Save corrected reporter details, and say which ones actually changed."""
+    """Save corrected reporter details, and say which ones actually changed.
+
+    The agent files early and learns the caller's number later, so a number
+    arriving here can turn out to belong to a report this case already has -
+    the same resident, discovered a minute late. That is folded rather than
+    refused: refusing would drop the number the caller just gave, and the
+    invariant is one resident, one report.
+    """
+    phone = data.get("reporter_phone")
+    if phone and report.reporter_phone != phone:
+        case = session.get(Case, report.case_id)
+        twin = _report_for_phone(session, case, phone) if case else None
+        if twin is not None and twin.id != report.id:
+            return _fold_report(session, case, into=twin, absorbing=report, data=data)
+
     changed: list[str] = []
     for field in MUTABLE_REPORT_FIELDS:
         value = data.get(field)
@@ -693,6 +812,94 @@ def update_report(session: Session, report: Report, data: dict[str, Any]) -> Rep
         {"report": serialize(report), "case_id": report.case_id, "changed": changed},
     )
     return report
+
+
+def _fold_report(
+    session: Session, case: Case, *, into: Report, absorbing: Report, data: dict[str, Any]
+) -> Report:
+    """Collapse two reports that turned out to be the same resident.
+
+    The surviving report is the one already carrying that number, because it
+    holds the history. Anything the absorbed row knows and it does not is
+    copied across first - a resident's details are never the thing that gets
+    dropped - and any call pointing at the absorbed row is repointed, so no
+    call is left referring to a report that no longer exists.
+    """
+    changed: list[str] = []
+    for field in MUTABLE_REPORT_FIELDS:
+        value = data.get(field) or getattr(absorbing, field)
+        if not value or getattr(into, field) == value:
+            continue
+        setattr(into, field, value)
+        changed.append(field)
+    if absorbing.call_id is not None:
+        into.call_id = absorbing.call_id
+
+    for call in session.exec(select(Call).where(Call.report_id == absorbing.id)).all():
+        call.report_id = into.id
+        session.add(call)
+
+    session.delete(absorbing)
+    session.add(into)
+    session.commit()
+    session.refresh(into)
+
+    before = case.report_count
+    if _recount_reporters(session, case):
+        _log(
+            session,
+            kind="report.merged",
+            case_id=case.id,
+            call_id=into.call_id,
+            field="report_count",
+            old=before,
+            new=case.report_count,
+            actor="system",
+        )
+    _reprice(session, case)
+    case.updated_at = utcnow()
+    session.add(case)
+    session.commit()
+    session.refresh(case)
+
+    publish(
+        session,
+        "report.updated",
+        {"report": serialize(into), "case_id": into.case_id, "changed": changed},
+    )
+    publish(session, "case.updated", {"case": serialize(case), "changed": ["report_count"]})
+    return into
+
+
+# Fields a report can lend to the case it belongs to. Deliberately short: a
+# report's wording may replace what the case says about the problem and where
+# it is, and nothing else. Status, priority and routing are the city's.
+PROMOTABLE_FIELDS = ("description", "location")
+
+
+def promote_report(
+    session: Session, case: Case, report: Report, fields: list[str], *, actor: str = "staff"
+) -> Case:
+    """Adopt a report's wording as the case's own.
+
+    Staff work the case, not a pile of reports, so the case has to stand on its
+    own - and it is frozen at whatever the first caller happened to say while
+    sharper accounts pile up underneath it. This is the deliberate way to move
+    one up: a staff member reads a report and promotes its words, rather than a
+    later caller silently overwriting an earlier one.
+
+    It routes through ``update_case``, so the promotion is audited and
+    broadcast exactly like a staff edit typed into the dashboard, because that
+    is what it is.
+    """
+    if report.case_id != case.id:
+        raise ValueError("report does not belong to this case")
+
+    wanted = [f for f in fields if f in PROMOTABLE_FIELDS] or list(PROMOTABLE_FIELDS)
+    data = {f: getattr(report, f) for f in wanted if getattr(report, f)}
+    if not data:
+        return case
+    return update_case(session, case, data, actor=actor)
 
 
 # --------------------------------------------------------------------------
@@ -750,6 +957,42 @@ def set_phase(
     return call
 
 
+class CallSealed(Exception):
+    """Raised when something tries to rewrite a call that already ended."""
+
+
+def _seal_check(call: Call, data: dict[str, Any]) -> None:
+    """Refuse a write that would change a call after it completed.
+
+    A call is the record of a conversation that happened. While it is up,
+    everything about it moves - phase, activity, sentiment, who is on the line,
+    the transcript - and that live view is the point. Completion is the line:
+    the write that *performs* it carries the status, and after that nothing may
+    rewrite what was said or what state it was in.
+
+    A resident who rings back to correct something is not editing this call.
+    They get a new call, and it amends their report - which is the thing that
+    is supposed to hold their current account. See ``Report``.
+
+    A write that changes nothing is not a change, so a retried completion is
+    not an error.
+    """
+    if call.status != CallStatus.completed:
+        return
+    for field in (*MUTABLE_CALL_FIELDS, "phase", "status"):
+        value = data.get(field)
+        if value is None:
+            continue
+        current = getattr(call, field)
+        if hasattr(current, "value") and current.value == value:
+            continue
+        if current != value:
+            raise CallSealed(
+                f"call {call.id} completed at {call.ended_at}; its record cannot be "
+                f"changed. A correction belongs on the caller's report."
+            )
+
+
 def update_call(
     session: Session,
     call: Call,
@@ -757,6 +1000,7 @@ def update_call(
     *,
     actor: str = "voice_agent",
 ) -> Call:
+    _seal_check(call, data)
     status = data.get("status")
     completing = status in (CallStatus.completed, CallStatus.completed.value)
 
@@ -815,6 +1059,14 @@ def next_turn_seq(session: Session, call_id: int) -> int:
 
 
 def add_turn(session: Session, call: Call, role: str, text: str) -> Turn:
+    """Append one line to a live call's transcript.
+
+    Append-only, and only while the call is up. There is deliberately no path
+    that edits or deletes a turn: the transcript is what was said, and a
+    conversation that already ended cannot acquire new lines.
+    """
+    if call.status == CallStatus.completed:
+        raise CallSealed(f"call {call.id} has ended; its transcript is closed.")
     turn = Turn(call_id=call.id, turn_seq=next_turn_seq(session, call.id), role=role, text=text)
     session.add(turn)
     session.commit()
@@ -832,6 +1084,8 @@ def add_interim(session: Session, call: Call, role: str, text: str) -> dict[str,
     dashboard replaces the provisional line, it never concatenates, because a
     revised guess can be shorter than the one before it.
     """
+    if call.status == CallStatus.completed:
+        raise CallSealed(f"call {call.id} has ended; nothing more is being said on it.")
     payload = {
         "call_id": call.id,
         "turn_seq": next_turn_seq(session, call.id),

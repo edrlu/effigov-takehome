@@ -40,6 +40,7 @@ from server.schemas import (
     EscalateRequest,
     InterimCreate,
     NoteCreate,
+    PromoteReport,
     ReportCreate,
     ReportUpdate,
     TokenRequest,
@@ -179,6 +180,35 @@ async def update_case(
     return store.serialize(case)
 
 
+@app.post("/api/cases/{case_id}/promote-report")
+async def promote_report(
+    case_id: int,
+    body: PromoteReport,
+    background: BackgroundTasks,
+    actor: str = "staff",
+    session: Session = Depends(get_session),
+):
+    """Adopt one report's wording as the case's own.
+
+    Staff work the case, not the pile of reports under it, so the case has to
+    read as the whole problem. Its canonical fields are frozen at whatever the
+    first caller said, on purpose - a later, vaguer caller must not overwrite a
+    sharper one - so this is the deliberate way a better account moves up: a
+    staff member reads a report and promotes it. Audited and broadcast like any
+    other staff edit, because that is what it is.
+    """
+    case = _case_or_404(session, case_id)
+    report = session.get(Report, body.report_id)
+    if not report:
+        raise HTTPException(404, "report not found")
+    try:
+        case = store.promote_report(session, case, report, body.fields, actor=actor)
+    except ValueError as cause:
+        raise HTTPException(400, str(cause)) from cause
+    geocode.schedule(background, case)
+    return store.serialize(case)
+
+
 @app.post("/api/cases/{case_id}/notes", status_code=201)
 async def add_note(
     case_id: int,
@@ -238,7 +268,7 @@ async def file_report(
     session: Session = Depends(get_session),
 ):
     pinned = _case_or_404(session, body.case_id) if body.case_id is not None else None
-    report, case, merged = store.file_report(
+    report, case, merged, repeat = store.file_report(
         session,
         issue_type=body.issue_type,
         issue_type_confidence=body.issue_type_confidence,
@@ -255,6 +285,9 @@ async def file_report(
         "report": store.serialize(report),
         "case": store.serialize(case),
         "merged": merged,
+        # This number already had a report here: their account was replaced,
+        # and the case's count of separate residents did not move.
+        "repeat": repeat,
     }
 
 
@@ -307,16 +340,34 @@ async def patch_call(
     actor: str = "voice_agent",
     session: Session = Depends(get_session),
 ):
+    """Update a call that is still up.
+
+    A completed call is the record of a conversation that happened, so it is
+    sealed: this answers 409 rather than quietly doing nothing. Corrections
+    belong on the caller's report, which is the thing that holds their current
+    account; the call keeps saying what was actually said on it.
+    """
     call = _call_or_404(session, call_id)
-    return store.serialize(
-        store.update_call(session, call, body.model_dump(exclude_none=True), actor=actor)
-    )
+    try:
+        return store.serialize(
+            store.update_call(session, call, body.model_dump(exclude_none=True), actor=actor)
+        )
+    except store.CallSealed as sealed:
+        raise HTTPException(409, str(sealed)) from sealed
 
 
 @app.post("/api/calls/{call_id}/turns", status_code=201)
 async def add_turn(call_id: int, body: TurnCreate, session: Session = Depends(get_session)):
+    """Append one line to a live call's transcript.
+
+    Append-only by construction: there is no endpoint that edits or deletes a
+    turn, and a call that has ended takes no more of them.
+    """
     call = _call_or_404(session, call_id)
-    return store.serialize(store.add_turn(session, call, body.role, body.text))
+    try:
+        return store.serialize(store.add_turn(session, call, body.role, body.text))
+    except store.CallSealed as sealed:
+        raise HTTPException(409, str(sealed)) from sealed
 
 
 @app.get("/api/calls/{call_id}/turns")
@@ -334,7 +385,10 @@ async def add_interim(call_id: int, body: InterimCreate, session: Session = Depe
     202, not 201: nothing was created. The frame is the whole point.
     """
     call = _call_or_404(session, call_id)
-    return store.add_interim(session, call, body.role, body.text)
+    try:
+        return store.add_interim(session, call, body.role, body.text)
+    except store.CallSealed as sealed:
+        raise HTTPException(409, str(sealed)) from sealed
 
 
 # --------------------------------------------------------------------------
