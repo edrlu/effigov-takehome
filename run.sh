@@ -40,8 +40,11 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-if ! grep -qE '^OPENAI_API_KEY=sk-' .env; then
-  echo "OPENAI_API_KEY is not set in .env. The voice agent will not start without it." >&2
+# `sk-...` is what .env.example ships, and the copy above is what wrote it, so
+# a bare `sk-` prefix would wave the untouched placeholder straight through.
+if ! grep -qE '^OPENAI_API_KEY=sk-[A-Za-z0-9_-]{20,}$' .env; then
+  echo "OPENAI_API_KEY is not set to a real key in .env." >&2
+  echo "The voice agent will not start without it." >&2
   exit 1
 fi
 
@@ -54,6 +57,9 @@ if [ ! -d web/node_modules ]; then
 fi
 
 # ------------------------------------------------------------------ startup
+# `$!` after `cmd | sed &` is the sed, not the service, so the old form
+# recorded four colourisers and left every server running on Ctrl-C. Writing
+# through a process substitution keeps the service itself as the background job.
 pids=()
 cleanup() {
   trap - EXIT INT TERM
@@ -77,11 +83,11 @@ wait_for() { # url, label, attempts
 }
 
 echo "starting livekit-server   ws://localhost:7880"
-livekit-server --dev 2>&1 | sed $'s/^/\033[35m[livekit]\033[0m /' &
+livekit-server --dev > >(sed $'s/^/\033[35m[livekit]\033[0m /') 2>&1 &
 pids+=($!)
 
 echo "starting api              http://localhost:8000"
-uv run uvicorn server.main:app --port 8000 --reload 2>&1 | sed $'s/^/\033[36m[api]    \033[0m /' &
+uv run uvicorn server.main:app --port 8000 --reload > >(sed $'s/^/\033[36m[api]    \033[0m /') 2>&1 &
 pids+=($!)
 
 wait_for http://localhost:8000/api/health api
@@ -92,11 +98,11 @@ if [ "$SEED" -eq 1 ]; then
 fi
 
 echo "starting voice agent      room worker"
-uv run python -m agent.main dev 2>&1 | sed $'s/^/\033[33m[agent]  \033[0m /' &
+uv run python -m agent.main dev > >(sed $'s/^/\033[33m[agent]  \033[0m /') 2>&1 &
 pids+=($!)
 
 echo "starting dashboard        http://localhost:3000"
-(cd web && npm run dev) 2>&1 | sed $'s/^/\033[32m[web]    \033[0m /' &
+(cd web && npm run dev) > >(sed $'s/^/\033[32m[web]    \033[0m /') 2>&1 &
 pids+=($!)
 
 wait_for http://localhost:3000 dashboard 60 || true
