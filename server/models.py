@@ -159,6 +159,14 @@ class Case(SQLModel, table=True):
     escalated: bool = Field(default=False, index=True)
     escalation_reason: str | None = None
 
+    # Details the residents on this case do not agree about, comma separated.
+    # Recomputed from their reports every time one lands - see
+    # ``triage.corroborate_locations``. A dispatcher needs to know that two
+    # people put the pothole three blocks apart, because the alternative is a
+    # crew sent to whichever account happened to arrive first. Serialized as
+    # ``contested``, a list.
+    contested_fields: str | None = None
+
     notes: str | None = None
     summary: str | None = None
 
@@ -200,6 +208,12 @@ class Report(SQLModel, table=True):
     # said, kept so a later, vaguer caller cannot overwrite a sharper one and
     # so staff can promote a better account onto the case deliberately.
     location: str | None = None
+    # And what this caller said the problem was. Stored as given, before the
+    # confidence gate that decides what the *case* is classified as: that gate
+    # is the city's policy about acting on a guess, not a reason to forget what
+    # a resident actually said. Two residents agreeing is evidence; one saying
+    # water leak where the case says pothole is worth a dispatcher's attention.
+    issue_type: IssueType | None = None
 
     created_at: datetime = Field(default_factory=utcnow)
 

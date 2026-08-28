@@ -36,6 +36,7 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "longitude": "FLOAT",
         "location_precision": "VARCHAR NOT NULL DEFAULT 'unresolved'",
         "location_detail": "VARCHAR",
+        "contested_fields": "VARCHAR",
     },
     "call": {
         "phase": "VARCHAR NOT NULL DEFAULT 'greeting'",
@@ -47,7 +48,7 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "activity_line": "VARCHAR",
     },
     "turn": {"turn_seq": "INTEGER NOT NULL DEFAULT 1"},
-    "report": {"location": "VARCHAR"},
+    "report": {"location": "VARCHAR", "issue_type": "VARCHAR"},
 }
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import json
 
 import pytest
@@ -11,6 +13,9 @@ from sqlmodel.pool import StaticPool
 
 from server.db import get_session
 from server.main import app
+
+os.environ["EFFIGOV_GEOCODE"] = "0"
+os.environ["EFFIGOV_SUMMARY"] = "0"
 
 
 @pytest.fixture()

@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from livekit import api as lkapi
 from sqlmodel import Session, select
 
-from server import geocode, store
+from server import geocode, store, summarize
 from server.db import get_session, init_db
 from server.hub import envelope as hub_envelope
 from server.hub import hub
@@ -281,6 +281,11 @@ async def file_report(
         actor=actor,
     )
     geocode.schedule(background, case)
+    # The corroboration signals were recomputed inline - they are cheap and a
+    # dispatcher acts on them. The prose summary is a model call, so it goes
+    # the way geocoding does: after the response, debounced, never blocking a
+    # resident on the phone and never able to fail their report.
+    summarize.schedule(background, case)
     return {
         "report": store.serialize(report),
         "case": store.serialize(case),
@@ -295,12 +300,15 @@ async def file_report(
 async def patch_report(
     report_id: int,
     body: ReportUpdate,
+    background: BackgroundTasks,
     session: Session = Depends(get_session),
 ):
     report = session.get(Report, report_id)
     if not report:
         raise HTTPException(404, "report not found")
-    return store.serialize(store.update_report(session, report, body.model_dump(exclude_none=True)))
+    updated = store.update_report(session, report, body.model_dump(exclude_none=True))
+    summarize.schedule(background, session.get(Case, updated.case_id))
+    return store.serialize(updated)
 
 
 # --------------------------------------------------------------------------

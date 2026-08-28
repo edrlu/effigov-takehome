@@ -107,6 +107,11 @@ def serialize(obj: Any) -> dict[str, Any]:
             data[key] = value.isoformat()
         elif hasattr(value, "value"):
             data[key] = value.value
+    if isinstance(obj, Case):
+        # Stored comma separated, read as a list. A dispatcher's question is
+        # "do the residents agree about where this is?", not "what is in this
+        # string".
+        data["contested"] = split_contested(obj.contested_fields)
     if isinstance(obj, Call):
         # Formatted once, here, so every client renders the same number.
         data["caller_phone_display"] = format_phone(obj.caller_phone)
@@ -116,6 +121,10 @@ def serialize(obj: Any) -> dict[str, Any]:
         # a record that lost its link.
         data["produced_report"] = obj.report_id is not None
     return data
+
+
+def split_contested(raw: str | None) -> list[str]:
+    return [f for f in (raw or "").split(",") if f]
 
 
 def format_phone(raw: str | None) -> str | None:
@@ -281,6 +290,51 @@ def _recount_reporters(session: Session, case: Case) -> bool:
         return False
     case.report_count = count
     return True
+
+
+def recorroborate(session: Session, case: Case, *, actor: str = "voice_agent") -> list[str]:
+    """Re-read every report on a case and bring the case back in line with them.
+
+    A case is not a snapshot of whoever called first. It is the city's current
+    best account of the incident, and every new resident who contributes is
+    evidence about it: how many separate people have hit this, and whether they
+    describe the same thing.
+
+    Cheap and deterministic on purpose, so it runs inline on the request path.
+    The one part that is neither - regenerating the prose summary across the
+    accounts - is a model call and lives in ``server.summarize``, off the
+    request path entirely, exactly like geocoding.
+
+    Returns the field names that moved, for the caller's ``case.updated`` frame.
+    """
+    reports = session.exec(select(Report).where(Report.case_id == case.id)).all()
+    changed: list[str] = []
+
+    if _recount_reporters(session, case):
+        changed.append("report_count")
+
+    contested = triage.contested_fields(
+        triage.corroborate_locations([r.location for r in reports]),
+        triage.corroborate_issue_types(
+            [r.issue_type.value if r.issue_type else None for r in reports]
+        ),
+    )
+    joined = ",".join(contested) or None
+    if case.contested_fields != joined:
+        _log(
+            session,
+            kind="case.updated",
+            case_id=case.id,
+            field="contested_fields",
+            old=case.contested_fields,
+            new=joined,
+            actor=actor,
+        )
+        case.contested_fields = joined
+        changed.append("contested_fields")
+
+    changed += _reprice(session, case, actor=actor)
+    return changed
 
 
 def _reprice(session: Session, case: Case, *, actor: str = "system") -> list[str]:
@@ -651,6 +705,11 @@ def file_report(
     case's own fields alone: a second reporter adds their account, they do not
     silently re-categorise somebody else's incident.
     """
+    # What this caller said it was, before the confidence gate below decides
+    # what the *case* gets classified as. The gate is policy about acting on a
+    # guess; it is not a reason to forget the resident's own account.
+    stated_issue_type = issue_type
+
     if case is not None:
         similarity, merged = 1.0, True
     else:
@@ -692,6 +751,7 @@ def file_report(
             ("reporter_name", reporter_name),
             ("description", description),
             ("location", location),
+            ("issue_type", stated_issue_type),
         ):
             if value:
                 setattr(report, field, value)
@@ -705,6 +765,7 @@ def file_report(
             reporter_phone=reporter_phone,
             description=description,
             location=location,
+            issue_type=stated_issue_type,
         )
     session.add(report)
     session.commit()
@@ -729,7 +790,7 @@ def file_report(
             )
 
     before = case.report_count
-    _recount_reporters(session, case)
+    changed = recorroborate(session, case, actor=actor)
     case.updated_at = utcnow()
     _log(
         session,
@@ -741,11 +802,13 @@ def file_report(
         new=case.report_count,
         actor=actor,
     )
-    _reprice(session, case, actor=actor)
     session.add(case)
     session.commit()
     session.refresh(case)
     session.refresh(report)
+
+    if changed:
+        publish(session, "case.updated", {"case": serialize(case), "changed": changed})
 
     publish(
         session,
@@ -811,7 +874,27 @@ def update_report(session: Session, report: Report, data: dict[str, Any]) -> Rep
         "report.updated",
         {"report": serialize(report), "case_id": report.case_id, "changed": changed},
     )
+    # A resident correcting where they said it was is evidence about the case,
+    # not just about their own row - two accounts that agreed a minute ago may
+    # not any more. Recomputed here as well as on the file path, so the case
+    # never lags the reports under it.
+    _recorroborate_case(session, report.case_id)
     return report
+
+
+def _recorroborate_case(session: Session, case_id: int, *, actor: str = "voice_agent") -> None:
+    """Bring a case back in line with its reports, and say what moved."""
+    case = session.get(Case, case_id)
+    if case is None:
+        return
+    changed = recorroborate(session, case, actor=actor)
+    if not changed:
+        return
+    case.updated_at = utcnow()
+    session.add(case)
+    session.commit()
+    session.refresh(case)
+    publish(session, "case.updated", {"case": serialize(case), "changed": changed})
 
 
 def _fold_report(
@@ -845,7 +928,8 @@ def _fold_report(
     session.refresh(into)
 
     before = case.report_count
-    if _recount_reporters(session, case):
+    recomputed = recorroborate(session, case, actor="system")
+    if case.report_count != before:
         _log(
             session,
             kind="report.merged",
@@ -856,7 +940,6 @@ def _fold_report(
             new=case.report_count,
             actor="system",
         )
-    _reprice(session, case)
     case.updated_at = utcnow()
     session.add(case)
     session.commit()
@@ -867,7 +950,8 @@ def _fold_report(
         "report.updated",
         {"report": serialize(into), "case_id": into.case_id, "changed": changed},
     )
-    publish(session, "case.updated", {"case": serialize(case), "changed": ["report_count"]})
+    if recomputed:
+        publish(session, "case.updated", {"case": serialize(case), "changed": recomputed})
     return into
 
 
