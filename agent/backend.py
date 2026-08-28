@@ -32,7 +32,9 @@ class CaseAPI:
         return r.json()
 
     async def update_call(self, call_id: int, **fields: Any) -> dict[str, Any]:
-        r = await self._client.patch(f"/api/calls/{call_id}", json=fields)
+        r = await self._client.patch(
+            f"/api/calls/{call_id}", json={k: v for k, v in fields.items() if v is not None}
+        )
         r.raise_for_status()
         return r.json()
 
@@ -46,8 +48,10 @@ class CaseAPI:
             f"/api/calls/{call_id}/interim", json={"role": role, "text": text}
         )
 
-    async def set_phase(self, call_id: int, phase: str) -> dict[str, Any]:
-        return await self.update_call(call_id, phase=phase)
+    async def set_phase(
+        self, call_id: int, phase: str, activity_line: str | None = None
+    ) -> dict[str, Any]:
+        return await self.update_call(call_id, phase=phase, activity_line=activity_line)
 
     # -- reports ----------------------------------------------------------
     async def file_report(self, **fields: Any) -> dict[str, Any]:

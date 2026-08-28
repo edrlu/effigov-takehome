@@ -57,6 +57,27 @@ MUTABLE_CASE_FIELDS = {
 
 MUTABLE_REPORT_FIELDS = ("reporter_name", "reporter_phone", "description")
 
+# Fields a PATCH on a call may set. ``phase`` and ``status`` are not here: they
+# are lifecycle, handled explicitly above the loop that walks this tuple.
+MUTABLE_CALL_FIELDS = (
+    "case_id",
+    "report_id",
+    "summary",
+    "caller_phone",
+    "caller_name",
+    "caller_city",
+    "line_type",
+    "language",
+    "sentiment",
+    "activity_line",
+)
+
+# The subset a supervisor is watching rather than plumbing, so each one is
+# worth an audit row of its own.
+AUDITED_CALL_FIELDS = frozenset(
+    {"caller_name", "caller_city", "line_type", "language", "sentiment", "activity_line"}
+)
+
 # How much history a reconnecting dashboard can replay. Roughly an hour of a
 # busy call centre: long enough that a laptop lid closed over lunch still
 # resumes, short enough that the table stays small.
@@ -74,7 +95,27 @@ def serialize(obj: Any) -> dict[str, Any]:
             data[key] = value.isoformat()
         elif hasattr(value, "value"):
             data[key] = value.value
+    if isinstance(obj, Call):
+        # Formatted once, here, so every client renders the same number.
+        data["caller_phone_display"] = format_phone(obj.caller_phone)
     return data
+
+
+def format_phone(raw: str | None) -> str | None:
+    """``5105551212`` -> ``+1 (510) 555-1212``. Anything else comes back as-is.
+
+    Storage stays digits, because that is what lookups match on. This is
+    presentation, and a number the city cannot parse is shown exactly as the
+    caller gave it rather than mangled into a shape it does not have.
+    """
+    if not raw:
+        return None
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) != 10:
+        return raw
+    return f"+1 ({digits[:3]}) {digits[3:6]}-{digits[6:]}"
 
 
 # --------------------------------------------------------------------------
@@ -555,21 +596,38 @@ def set_phase(
     return call
 
 
-def update_call(session: Session, call: Call, data: dict[str, Any]) -> Call:
+def update_call(
+    session: Session,
+    call: Call,
+    data: dict[str, Any],
+    *,
+    actor: str = "voice_agent",
+) -> Call:
     status = data.get("status")
     completing = status in (CallStatus.completed, CallStatus.completed.value)
 
     # Hanging up ends the call whatever else the caller of this function said.
     if data.get("phase") is not None:
-        call = set_phase(session, call, data["phase"])
+        call = set_phase(session, call, data["phase"], actor=actor)
     if completing:
         call = set_phase(session, call, CallPhase.ended, actor="system")
 
     changed: list[str] = []
-    for field in ("case_id", "report_id", "summary", "caller_phone"):
+    for field in MUTABLE_CALL_FIELDS:
         value = data.get(field)
         if value is None or getattr(call, field) == value:
             continue
+        if field in AUDITED_CALL_FIELDS:
+            _log(
+                session,
+                kind="call.updated",
+                call_id=call.id,
+                case_id=call.case_id,
+                field=field,
+                old=getattr(call, field),
+                new=value,
+                actor=actor,
+            )
         setattr(call, field, value)
         changed.append(field)
 

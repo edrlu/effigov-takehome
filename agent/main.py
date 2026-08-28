@@ -13,11 +13,13 @@ conversation instead of one row appearing at hangup. Repeated partial updates
 are cheap because every write is a PATCH of only the fields that moved, and the
 backend logs and broadcasts exactly the fields that changed.
 
-The agent also reports two things about itself that only it knows: which
-*phase* of the call it is in, so staff watching the board can see the
-conversation progressing rather than just its result, and how *confident* it is
-in the category it picked, so a shaky guess leaves the case visibly
-unclassified instead of quietly mis-routed.
+The agent also reports things about the call that only it knows: which *phase*
+of the call it is in and a one-line *activity* describing what it is doing, so
+staff watching the board can see the conversation progressing rather than just
+its result; how *confident* it is in the category it picked, so a shaky guess
+leaves the case visibly unclassified instead of quietly mis-routed; and how the
+caller *sounds*, so a supervisor can step into a call that is going badly while
+it is still up.
 """
 
 from __future__ import annotations
@@ -62,6 +64,27 @@ IssueType = Literal[
 # with one line while the session speaks another.
 GREETING = "Hi, this is Emma from Berkeley. How can I help you today?"
 
+# One short present-tense line per phase, for the supervisor console. The agent
+# can say something more specific; this is what it falls back to so the line is
+# never stale or empty just because nobody thought to set it.
+ACTIVITY_BY_PHASE = {
+    "greeting": "Greeting the caller.",
+    "gathering": "Gathering details about the problem.",
+    "filed": "Confirming the report and taking contact details.",
+    "wrapping": "Wrapping up and reading the case number back.",
+    "ended": "Call ended.",
+}
+
+# The console renders this on one line beside the phase badge.
+ACTIVITY_MAX = 60
+
+
+def short_activity(text: str) -> str:
+    """Trim an activity line to something that fits on the console's one line."""
+    text = " ".join(text.split())
+    return text if len(text) <= ACTIVITY_MAX else text[: ACTIVITY_MAX - 1].rstrip() + "\u2026"
+
+
 INSTRUCTIONS = f"""
 You are Emma, the automated intake line for the City of Berkeley's 311 service
 center. You speak with residents by phone.
@@ -98,6 +121,13 @@ Rules:
   human. Claiming certainty you do not have routes a crew to the wrong place.
 - Call `set_call_phase` as the conversation moves: `gathering` once you start
   collecting details, `wrapping` when you begin reading the case number back.
+  Pass an `activity` line with it, one short present-tense sentence under about
+  sixty characters saying what you are doing, such as "Handling request about
+  pothole on Oak Street." A supervisor reads that line off the console.
+- Call `set_sentiment` when the caller's tone clearly shifts, negative for a
+  frustrated, upset, or distressed caller and positive once they are reassured.
+  A supervisor watching the console needs to see an unhappy caller while the
+  call is still up, not afterwards in a transcript.
 - When the caller says they have nothing more to add, close out: thank them by
   name, say who is handling it, invite them to call back, and then call
   `end_call` so the line hangs up instead of sitting open in silence.
@@ -115,16 +145,55 @@ class CallState:
     case_number: str | None = None
     report_id: int | None = None
     phase: str = "greeting"
+    activity: str | None = None
+    sentiment: str = "neutral"
+    caller_name: str | None = None
     collected: dict[str, str] = field(default_factory=dict)
     # Set by the entrypoint, which is the only place that holds the room.
     request_hangup: Callable[[], None] | None = None
 
-    async def set_phase(self, phase: str) -> None:
-        """Tell the backend where the call has got to, once per transition."""
-        if self.call_id is None or self.phase == phase:
+    async def set_phase(self, phase: str, activity: str | None = None) -> None:
+        """Tell the backend where the call has got to, once per transition.
+
+        The activity line rides along, so the console never shows a phase that
+        moved on next to a sentence describing what the agent was doing before.
+        """
+        if self.call_id is None:
+            return
+        if self.phase == phase:
+            # Same phase, new words for it. Still worth saying.
+            if activity:
+                await self.set_activity(activity)
             return
         self.phase = phase
-        await self.api.set_phase(self.call_id, phase)
+        line = short_activity(activity or ACTIVITY_BY_PHASE.get(phase, ""))
+        self.activity = line or None
+        await self.api.set_phase(self.call_id, phase, activity_line=self.activity)
+
+    async def set_activity(self, activity: str) -> None:
+        """Update the one-line "what is happening now" without changing phase."""
+        line = short_activity(activity)
+        if self.call_id is None or not line or self.activity == line:
+            return
+        self.activity = line
+        await self.api.update_call(self.call_id, activity_line=line)
+
+    async def set_sentiment(self, sentiment: str) -> None:
+        if self.call_id is None or self.sentiment == sentiment:
+            return
+        self.sentiment = sentiment
+        await self.api.update_call(self.call_id, sentiment=sentiment)
+
+    async def set_caller_name(self, name: str) -> None:
+        """Put the caller's name on the call itself, not only on the report.
+
+        The console lists live calls. Making it join through a report to learn
+        who is on the line would mean showing nobody until a report exists.
+        """
+        if self.call_id is None or self.caller_name == name:
+            return
+        self.caller_name = name
+        await self.api.update_call(self.call_id, caller_name=name)
 
 
 class IntakeAgent(Agent):
@@ -165,7 +234,9 @@ class IntakeAgent(Agent):
         if state.case_id is not None:
             return f"A report is already open on this call: {state.case_number}."
 
-        await state.set_phase("gathering")
+        await state.set_phase(
+            "gathering", f"Taking a report about {issue_type.replace('_', ' ')} at {location}."
+        )
         result = await state.api.file_report(
             issue_type=issue_type,
             issue_type_confidence=issue_type_confidence,
@@ -182,7 +253,9 @@ class IntakeAgent(Agent):
             await state.api.update_call(
                 state.call_id, case_id=case["id"], report_id=report["id"]
             )
-        await state.set_phase("filed")
+        await state.set_phase(
+            "filed", f"Filed {state.case_number}, taking contact details."
+        )
 
         logger.info(
             "filed report %s on case %s (merged=%s)",
@@ -244,6 +317,9 @@ class IntakeAgent(Agent):
 
         if phone:
             phone = "".join(ch for ch in phone if ch.isdigit())
+
+        if caller_name:
+            await state.set_caller_name(caller_name)
 
         if state.report_id is not None and (caller_name or phone or description):
             await state.api.update_report(
@@ -353,6 +429,7 @@ class IntakeAgent(Agent):
         self,
         ctx: RunContext[CallState],
         phase: Literal["greeting", "gathering", "filed", "wrapping", "ended"],
+        activity: str | None = None,
     ) -> str:
         """Tell the staff dashboard where this conversation has got to.
 
@@ -363,10 +440,35 @@ class IntakeAgent(Agent):
             phase: Use gathering once you are collecting details, and wrapping
                 when you start reading the case number back. filed and ended are
                 set for you when you file a report and when the call hangs up.
+            activity: One short present-tense sentence, under about sixty
+                characters, saying what you are doing right now, such as
+                "Handling request about pothole on Oak Street." This is what a
+                supervisor reads on the live console beside the phase.
         """
         state = ctx.userdata
-        await state.set_phase(phase)
+        await state.set_phase(phase, activity)
         return f"Phase is {phase}."
+
+    @function_tool
+    async def set_sentiment(
+        self,
+        ctx: RunContext[CallState],
+        sentiment: Literal["positive", "neutral", "negative"],
+    ) -> str:
+        """Record how the caller sounds, whenever their tone clearly shifts.
+
+        Your own read is the signal here, so do not overthink it. Use negative
+        for a caller who is frustrated, angry, or distressed, positive once
+        somebody who was unhappy has been reassured, and neutral otherwise. A
+        supervisor watching the live console uses this to decide which call to
+        step into, so it is only useful while the call is still up.
+
+        Args:
+            sentiment: How the caller sounds right now.
+        """
+        state = ctx.userdata
+        await state.set_sentiment(sentiment)
+        return f"Sentiment is {sentiment}."
 
     @function_tool
     async def set_status(
@@ -470,7 +572,7 @@ async def entrypoint(ctx: JobContext) -> None:
         try:
             if state.call_id is None:
                 return
-            await state.set_phase("wrapping")
+            await state.set_phase("wrapping", "Closing out the call and writing a summary.")
             summary = await _summarize(session)
             # status=completed also moves the phase to ended, in the backend, so
             # a crash between these two calls cannot leave a call looking live.

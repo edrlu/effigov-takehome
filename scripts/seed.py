@@ -6,7 +6,12 @@ the same deduplication path a real call would.
 
 from __future__ import annotations
 
+import os
+
 import httpx
+
+# Same variable the voice agent and the rehearsal use.
+BASE = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 REPORTS = [
     {
@@ -32,7 +37,7 @@ REPORTS = [
     },
 ]
 
-with httpx.Client(base_url="http://localhost:8000", timeout=10) as client:
+with httpx.Client(base_url=BASE, timeout=10) as client:
     for report in REPORTS:
         r = client.post("/api/reports", params={"actor": "staff"}, json=report)
         r.raise_for_status()
