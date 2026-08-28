@@ -28,7 +28,15 @@ engine = create_engine(
 # Columns added after the first release. SQLite can only ADD COLUMN, so every
 # entry here has to be nullable or carry a literal default.
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
-    "case": {"issue_type_confidence": "FLOAT"},
+    "case": {
+        "issue_type_confidence": "FLOAT",
+        "location_text": "VARCHAR",
+        "location_formatted": "VARCHAR",
+        "latitude": "FLOAT",
+        "longitude": "FLOAT",
+        "location_precision": "VARCHAR NOT NULL DEFAULT 'unresolved'",
+        "location_detail": "VARCHAR",
+    },
     "call": {
         "phase": "VARCHAR NOT NULL DEFAULT 'greeting'",
         "caller_name": "VARCHAR",
@@ -66,7 +74,11 @@ def migrate(bind=None) -> None:
 
 def _backfill(conn, table: str, column: str) -> None:
     """Give rows that predate a column a value that is true of them."""
-    if table == "call" and column == "phase":
+    if table == "case" and column == "location_text":
+        # Before this column existed, ``location`` was the caller's words and
+        # nothing had edited it, so copying it across is true of every old row.
+        conn.execute(text("UPDATE \"case\" SET location_text = location"))
+    elif table == "call" and column == "phase":
         # A call that already hung up is finished, whatever the default says.
         conn.execute(text("UPDATE call SET phase = 'ended' WHERE status = 'completed'"))
     elif table == "turn" and column == "turn_seq":
